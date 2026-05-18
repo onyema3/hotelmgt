@@ -14,8 +14,14 @@ class GHM_Forecasting {
      */
     public static function get_forecast( $days = 30 ) {
         global $wpdb;
-        $today    = date('Y-m-d');
-        $end_date = date('Y-m-d', strtotime("+{$days} days"));
+        // current_time() honours WP timezone; raw date() returns the
+        // server's calendar day, which can be off by one for properties
+        // whose physical server is in a different timezone. Since the
+        // forecast window is bracketed inclusively by these dates and
+        // the calendar table is rendered against them, an off-by-one
+        // shifts every per-day bucket — wrong day labels on the chart.
+        $today    = current_time( 'Y-m-d' );
+        $end_date = ( new DateTime( $today ) )->modify( "+{$days} days" )->format( 'Y-m-d' );
 
         $bookings = $wpdb->get_results($wpdb->prepare(
             "SELECT b.*, r.price_night, r.price_hour, r.type AS room_type
@@ -32,7 +38,9 @@ class GHM_Forecasting {
         $total_confirmed= 0;
 
         for ($i = 0; $i < $days; $i++) {
-            $date = date('Y-m-d', strtotime("+{$i} days"));
+            // Same reason as $today/$end_date above: keep bucket
+            // boundaries on the WP calendar, not the server's.
+            $date = ( new DateTime( $today ) )->modify( "+{$i} days" )->format( 'Y-m-d' );
             $daily[$date] = 0;
         }
 
@@ -94,7 +102,7 @@ class GHM_Export {
 
         $rows = $params ? $wpdb->get_results($wpdb->prepare($sql,$params), ARRAY_A) : $wpdb->get_results($sql, ARRAY_A);
 
-        $filename = 'ghm-payments-'.date('Y-m-d').'.csv';
+        $filename = 'ghm-payments-'.current_time('Y-m-d').'.csv';
         header('Content-Type: text/csv; charset=UTF-8');
         header('Content-Disposition: attachment; filename="'.$filename.'"');
         header('Pragma: no-cache'); header('Expires: 0');
@@ -115,7 +123,7 @@ class GHM_Export {
      */
     public static function bookings_csv( $args = array() ) {
         $bookings = GHM_Bookings::get_bookings(array_merge($args, array('limit'=>9999)));
-        $filename = 'ghm-bookings-'.date('Y-m-d').'.csv';
+        $filename = 'ghm-bookings-'.current_time('Y-m-d').'.csv';
         header('Content-Type: text/csv; charset=UTF-8');
         header('Content-Disposition: attachment; filename="'.$filename.'"');
         header('Pragma: no-cache');
@@ -179,8 +187,8 @@ class GHM_Export {
         global $wpdb;
         $hotel = get_option('ghm_hotel_name', get_bloginfo('name'));
         $sym   = get_option('ghm_currency_symbol', '₦');
-        $from  = $from ?: date('Y-m-01');
-        $to    = $to   ?: date('Y-m-t');
+        $from  = $from ?: current_time('Y-m-01');
+        $to    = $to   ?: current_time('Y-m-t');
 
         if ($type === 'payments') {
             $where  = "p.status='completed'";
@@ -239,7 +247,7 @@ class GHM_Export {
           @media print{button{display:none!important;}}
         </style></head><body>
         <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-          <div><h1>'.esc_html($hotel).'</h1><div class="meta">'.esc_html($title).' &bull; Generated '.date('F j, Y 	 g:i A').'</div></div>
+          <div><h1>'.esc_html($hotel).'</h1><div class="meta">'.esc_html($title).' &bull; Generated '.current_time('F j, Y, g:i A').'</div></div>
           <button onclick="window.print()" style="padding:8px 16px;background:#c9a84c;border:none;border-radius:6px;font-weight:bold;cursor:pointer;">🖨 Print / Save PDF</button>
         </div>
         <table><thead><tr>';
@@ -262,7 +270,7 @@ class GHM_Export {
      */
     public static function activity_csv($from = '', $to = '') {
         $log      = GHM_Activity_Report::get_report(array('from'=>$from,'to'=>$to,'limit'=>9999));
-        $filename = 'ghm-activity-'.date('Y-m-d').'.csv';
+        $filename = 'ghm-activity-'.current_time('Y-m-d').'.csv';
         header('Content-Type: text/csv; charset=UTF-8');
         header('Content-Disposition: attachment; filename="'.$filename.'"');
         header('Pragma: no-cache');
@@ -726,8 +734,8 @@ class GHM_Activity_Report {
 
     public static function get_report($args = array()) {
         global $wpdb;
-        $from  = sanitize_text_field($args['from'] ?? date('Y-m-01'));
-        $to    = sanitize_text_field($args['to']   ?? date('Y-m-t'));
+        $from  = sanitize_text_field($args['from'] ?? current_time('Y-m-01'));
+        $to    = sanitize_text_field($args['to']   ?? current_time('Y-m-t'));
         $limit = absint($args['limit'] ?? 100);
 
         return $wpdb->get_results($wpdb->prepare(
@@ -743,8 +751,8 @@ class GHM_Activity_Report {
 
     public static function get_summary_by_user($from = '', $to = '') {
         global $wpdb;
-        $from = $from ?: date('Y-m-01');
-        $to   = $to   ?: date('Y-m-t');
+        $from = $from ?: current_time('Y-m-01');
+        $to   = $to   ?: current_time('Y-m-t');
         return $wpdb->get_results($wpdb->prepare(
             "SELECT l.user_id, u.display_name, COUNT(*) AS total_actions,
              SUM(CASE WHEN l.action LIKE '%booking%' THEN 1 ELSE 0 END) AS booking_actions,

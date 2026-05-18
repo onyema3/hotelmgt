@@ -143,7 +143,7 @@ class GHM_Login_Page {
     }
 
     public static function login_footer() {
-        echo '<p style="text-align:center;color:rgba(255,255,255,.2);font-size:11px;margin-top:20px;">&copy; ' . date('Y') . ' ' . esc_html(get_option('ghm_hotel_name','GuestHouse')) . '. All rights reserved.</p>';
+        echo '<p style="text-align:center;color:rgba(255,255,255,.2);font-size:11px;margin-top:20px;">&copy; ' . current_time('Y') . ' ' . esc_html(get_option('ghm_hotel_name','GuestHouse')) . '. All rights reserved.</p>';
     }
 }
 

@@ -1,7 +1,7 @@
 <?php if ( ! defined( 'ABSPATH' ) ) exit;
 global $wpdb;
-$year  = absint( $_GET['year']  ?? date('Y') );
-$month = absint( $_GET['month'] ?? date('n') );
+$year  = absint( $_GET['year']  ?? current_time('Y') );
+$month = absint( $_GET['month'] ?? current_time('n') );
 if ($month < 1) { $month = 12; $year--; }
 if ($month > 12){ $month = 1;  $year++; }
 $days_in_month = cal_days_in_month( CAL_GREGORIAN, $month, $year );

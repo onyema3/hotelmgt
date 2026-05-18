@@ -299,7 +299,11 @@ class GHM_Bookings {
     }
 
     private static function generate_ref() {
-        return 'GHM-' . strtoupper( substr( uniqid(), -6 ) ) . '-' . date( 'Ymd' );
+        // Date suffix uses WP timezone so the booking reference reads
+        // 'created on the same day the guest sees it.' Plain date()
+        // produced server-timezone refs, which could be 'tomorrow' or
+        // 'yesterday' relative to the property at the day boundary.
+        return 'GHM-' . strtoupper( substr( uniqid(), -6 ) ) . '-' . current_time( 'Ymd' );
     }
 
     private static function log( $action, $id ) {

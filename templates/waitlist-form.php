@@ -31,7 +31,7 @@
           </div>
           <div class="ghm-bform-field">
             <label>Desired Check-In *</label>
-            <input type="date" name="check_in" required min="<?php echo date('Y-m-d');?>">
+            <input type="date" name="check_in" required min="<?php echo current_time('Y-m-d');?>">
           </div>
           <div class="ghm-bform-field">
             <label>Desired Check-Out *</label>
