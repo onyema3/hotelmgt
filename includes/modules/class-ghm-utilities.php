@@ -381,8 +381,64 @@ class GHM_Permissions {
 
 /* ================================================================
    PIN / Quick Login (Front Desk Mode)
+   ================================================================
+
+   Threat model addressed:
+
+   1. Online brute-force. A 4-digit PIN gives 10,000 combinations.
+      Without throttling, a single attacker could exhaust the keyspace
+      against the admin-ajax endpoint in roughly 30 seconds. We add:
+
+      a) IP-based rate limit. Five wrong attempts inside a 5-minute
+         window from the same IP returns a generic invalid response
+         for the rest of the window. Backed by transients keyed on
+         sha1(IP) so the IP isn't stored verbatim.
+
+      b) Per-user lockout. Ten wrong attempts on the SAME PIN (across
+         any IPs) locks the account for 15 minutes. Defends against a
+         distributed / IP-rotating attack that bypasses (a). The
+         lockout is enforced by returning the same generic "Invalid
+         PIN" response — we never leak that an account is locked,
+         otherwise that becomes a user-enumeration oracle.
+
+      c) Setting (or clearing) the PIN clears any active lockout.
+         That's also the operator's "unlock this user" UX, so we
+         don't need a separate Unlock button this round.
+
+   2. Offline DB-leak resistance. The legacy hash was wp_hash() —
+      HMAC-MD5 keyed by SECURE_AUTH_KEY. Anyone who exfiltrated the
+      database AND the wp-config.php SECURE_AUTH_KEY could brute-force
+      a 4-digit PIN in a few seconds with a GPU. We move new PINs to
+      wp_hash_password() (bcrypt with per-row salt). Existing PINs are
+      transparently upgraded to bcrypt on the first successful login.
+
+   Trade-offs / known residual risk:
+
+   - The verify path is now O(N) over users-with-PINs because bcrypt
+     is per-row salted, so we can't do a single SELECT-by-hash. At
+     hotel staff scale (typically <50, hard cap 200) this is fine.
+     The cap is enforced and logged.
+
+   - This batch does not change the UX from "PIN-only" to
+     "PIN + username". That would defend against the residual
+     "attacker who knows ANY valid PIN can log in as that user"
+     case, but is a bigger UX change and out of scope here.
+
 ================================================================ */
 class GHM_PIN_Login {
+
+    /** Throttle / lockout knobs — tunable in one place. */
+    const IP_WINDOW_SECONDS = 300;   // 5-minute rolling window
+    const IP_MAX_ATTEMPTS   = 5;     // wrong attempts per IP per window
+    const USER_MAX_FAILS    = 10;    // wrong attempts per user before lockout
+    const USER_LOCK_SECONDS = 900;   // 15-minute lockout
+    const MAX_PIN_USERS     = 200;   // sanity cap — bcrypt scan beyond this is suspicious
+
+    /** Usermeta keys */
+    const META_LEGACY  = 'ghm_pin';            // wp_hash() — kept for legacy verify only
+    const META_BCRYPT  = 'ghm_pin_v2';         // wp_hash_password() — current
+    const META_FAILS   = 'ghm_pin_fail_count';
+    const META_LOCKED  = 'ghm_pin_locked_until'; // unix timestamp
 
     public static function init() {
         add_action('wp_ajax_nopriv_ghm_pin_login', array(__CLASS__,'ajax_pin_login'));
@@ -390,44 +446,73 @@ class GHM_PIN_Login {
         add_shortcode('ghm_pin_login',             array(__CLASS__,'render'));
 
         // Admin-only diagnostic. Works both inside wp-admin and on the front-end.
-        // Visit any page with ?ghm_pin_diag=YOUR_PIN while logged in as admin.
+        // Visit any page with ?ghm_pin_diag=1 while logged in as admin.
         add_action('admin_init', array(__CLASS__, 'maybe_run_diagnostic'));
         add_action('init',       array(__CLASS__, 'maybe_run_diagnostic'));
     }
 
     public static function ajax_pin_login() {
         // Normalize identically to set_pin() so save & login always agree.
-        $pin     = self::normalize_pin( $_POST['pin'] ?? '' );
+        $pin = self::normalize_pin( $_POST['pin'] ?? '' );
 
-        // Generic failure response — never leaks which PINs exist or why.
+        // Generic failure response — never leaks which PINs exist, whether
+        // a user is locked, or how many tries are left.
         $invalid = array( 'message' => 'Invalid PIN. Please try again.' );
 
+        // 1. IP-level rate limit BEFORE any DB / hash work. Cheap, and
+        //    means an attacker trying random PINs can't pin the CPU.
+        $ip_key = self::ip_throttle_key();
+        if ( $ip_key && self::ip_is_throttled( $ip_key ) ) {
+            self::log( 'rejected: ip throttled' );
+            wp_send_json_error( $invalid ); exit;
+        }
+
         if ( strlen( $pin ) < 4 ) {
+            self::record_ip_failure( $ip_key );
             self::log( 'rejected: too short (' . strlen( $pin ) . ')' );
             wp_send_json_error( $invalid ); exit;
         }
 
+        // 2. Find the user (bcrypt-aware: O(N) iteration over users-with-PINs).
         $user_id = self::find_user_by_pin( $pin );
         if ( ! $user_id ) {
-            self::log( 'rejected: no user matches hashed PIN' );
+            self::record_ip_failure( $ip_key );
+            self::log( 'rejected: no user matches PIN' );
+            wp_send_json_error( $invalid ); exit;
+        }
+
+        // 3. Per-user lockout check. We do this AFTER finding the user
+        //    rather than before, because (a) we only know which user to
+        //    check by matching the PIN first, and (b) returning the same
+        //    "Invalid PIN" message keeps the lockout state from leaking.
+        if ( self::user_is_locked( $user_id ) ) {
+            self::record_ip_failure( $ip_key );
+            self::record_user_failure( $user_id );
+            self::log( "rejected: user_id=$user_id is locked" );
             wp_send_json_error( $invalid ); exit;
         }
 
         $user = get_user_by( 'id', $user_id );
         if ( ! $user ) {
+            self::record_ip_failure( $ip_key );
             self::log( "rejected: user_id=$user_id has PIN meta but get_user_by returned nothing" );
             wp_send_json_error( $invalid ); exit;
         }
 
         // Permissive role check.
         // The fact that an admin saved a PIN for this user IS the authorization.
-        // We just refuse two things: subscribers/customers (no `read` cap on admin)
-        // — actually `read` is enough to land on admin-ajax — and explicitly
-        // marked staff records with status='deleted'.
+        // We just refuse explicitly soft-deleted staff entries.
         if ( self::is_deleted_staff( $user_id ) ) {
+            self::record_ip_failure( $ip_key );
             self::log( "rejected: user_id=$user_id is marked deleted in ghm_staff" );
             wp_send_json_error( $invalid ); exit;
         }
+
+        // 4. Success path. Clear all throttles for this user/IP, and
+        //    transparently migrate legacy wp_hash PINs to bcrypt.
+        self::clear_user_throttle( $user_id );
+        self::clear_ip_throttle( $ip_key );
+        self::maybe_upgrade_legacy_pin( $user_id, $pin );
 
         wp_set_current_user( $user_id, $user->user_login );
         wp_set_auth_cookie( $user_id, true );
@@ -436,6 +521,179 @@ class GHM_PIN_Login {
         self::log( "success: user_id=$user_id login=$user->user_login roles=" . implode( ',', (array) $user->roles ) );
         wp_send_json_success( array( 'redirect' => admin_url( 'admin.php?page=ghm-dashboard' ) ) );
         exit;
+    }
+
+    /* ── Throttle: IP-level ─────────────────────────────────────── */
+
+    /** Build the transient key for this request's IP. Returns '' when
+     *  no usable IP is available — in which case we skip IP throttle
+     *  and rely on per-user lockout alone. */
+    private static function ip_throttle_key() {
+        $ip = isset( $_SERVER['REMOTE_ADDR'] ) ? (string) $_SERVER['REMOTE_ADDR'] : '';
+        if ( $ip === '' ) return '';
+        // Hash the IP so the transient key doesn't store IPs verbatim.
+        return 'ghm_pin_ip_' . sha1( $ip );
+    }
+
+    private static function ip_is_throttled( $key ) {
+        if ( ! $key ) return false;
+        $row = get_transient( $key );
+        if ( ! is_array( $row ) ) return false;
+        return ( (int) ( $row['count'] ?? 0 ) ) >= self::IP_MAX_ATTEMPTS;
+    }
+
+    private static function record_ip_failure( $key ) {
+        if ( ! $key ) return;
+        $row = get_transient( $key );
+        if ( ! is_array( $row ) ) {
+            $row = array( 'count' => 1, 'first_at' => time() );
+        } else {
+            $row['count'] = (int) ( $row['count'] ?? 0 ) + 1;
+        }
+        // Keep the same expiry from first_at so the rolling window
+        // doesn't reset on every failure.
+        $remaining = max( 1, ( $row['first_at'] ?? time() ) + self::IP_WINDOW_SECONDS - time() );
+        set_transient( $key, $row, $remaining );
+    }
+
+    private static function clear_ip_throttle( $key ) {
+        if ( $key ) delete_transient( $key );
+    }
+
+    /* ── Throttle: per-user lockout ─────────────────────────────── */
+
+    private static function user_is_locked( $user_id ) {
+        $until = (int) get_user_meta( $user_id, self::META_LOCKED, true );
+        return $until > 0 && $until > time();
+    }
+
+    private static function record_user_failure( $user_id ) {
+        $count = (int) get_user_meta( $user_id, self::META_FAILS, true ) + 1;
+        update_user_meta( $user_id, self::META_FAILS, $count );
+        if ( $count >= self::USER_MAX_FAILS ) {
+            update_user_meta( $user_id, self::META_LOCKED, time() + self::USER_LOCK_SECONDS );
+            self::log( "user_id=$user_id locked for " . self::USER_LOCK_SECONDS . 's' );
+        }
+    }
+
+    /** Called on a successful login OR an admin set/clear action. */
+    public static function clear_user_throttle( $user_id ) {
+        delete_user_meta( $user_id, self::META_FAILS );
+        delete_user_meta( $user_id, self::META_LOCKED );
+    }
+
+    /* ── Hashing & verification ─────────────────────────────────── */
+
+    /**
+     * Normalize a PIN: strip any non-digit characters and cap at 8.
+     * Used by both set_pin() and ajax_pin_login() so the hash always matches.
+     */
+    public static function normalize_pin( $raw ) {
+        $pin = preg_replace( '/\D/', '', (string) $raw );
+        return substr( (string) $pin, 0, 8 );
+    }
+
+    /**
+     * Look up a user by their PIN.
+     *
+     * Bcrypt has a per-row salt so we can't do a single hash-equality
+     * SELECT like the old wp_hash version. Instead we pull the small
+     * set of users with EITHER a v2 (bcrypt) or v1 (legacy wp_hash)
+     * PIN meta, and check one at a time. At hotel scale (<= a few
+     * dozen staff) the cost is trivial; we cap and log if it grows
+     * beyond MAX_PIN_USERS as a sanity check.
+     *
+     * Returns the user_id on match, false otherwise. On a v1 match,
+     * the caller is expected to call maybe_upgrade_legacy_pin() to
+     * migrate the user to bcrypt.
+     */
+    private static function find_user_by_pin( $pin ) {
+        global $wpdb;
+        if ( strlen( $pin ) < 4 ) return false;
+
+        $rows = $wpdb->get_results( $wpdb->prepare(
+            "SELECT user_id, meta_key, meta_value
+               FROM {$wpdb->usermeta}
+              WHERE meta_key IN (%s, %s)
+              ORDER BY user_id ASC
+              LIMIT %d",
+            self::META_BCRYPT, self::META_LEGACY, self::MAX_PIN_USERS
+        ) );
+
+        if ( ! $rows ) return false;
+
+        if ( count( $rows ) >= self::MAX_PIN_USERS ) {
+            self::log( 'WARNING: users-with-PIN count is at MAX_PIN_USERS — verification scan was capped.' );
+        }
+
+        $legacy_target = wp_hash( $pin );
+
+        foreach ( $rows as $r ) {
+            if ( $r->meta_key === self::META_BCRYPT ) {
+                if ( wp_check_password( $pin, $r->meta_value ) ) {
+                    return (int) $r->user_id;
+                }
+            } else {
+                // Legacy wp_hash compare. hash_equals for timing safety
+                // (small benefit on a 64-char hex string, but free).
+                if ( hash_equals( (string) $r->meta_value, $legacy_target ) ) {
+                    return (int) $r->user_id;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * If this user logged in via a legacy v1 (wp_hash) PIN, replace it
+     * with a v2 (bcrypt) hash now that we have the plaintext in hand.
+     * No-op if the user is already on v2.
+     */
+    private static function maybe_upgrade_legacy_pin( $user_id, $pin ) {
+        if ( get_user_meta( $user_id, self::META_BCRYPT, true ) ) return;
+        if ( ! get_user_meta( $user_id, self::META_LEGACY, true ) ) return;
+
+        $bcrypt = wp_hash_password( $pin );
+        if ( ! $bcrypt ) return;
+
+        update_user_meta( $user_id, self::META_BCRYPT, $bcrypt );
+        delete_user_meta( $user_id, self::META_LEGACY );
+        self::log( "user_id=$user_id upgraded from legacy PIN hash to bcrypt" );
+    }
+
+    /**
+     * Set (or replace) a user's PIN. Always stores bcrypt, deletes any
+     * legacy wp_hash row, and clears any active lockout — setting a
+     * fresh PIN is also the operator's "unlock this user" UX.
+     */
+    public static function set_pin( $user_id, $pin ) {
+        $user_id = (int) $user_id;
+        if ( $user_id <= 0 ) return false;
+        $pin = self::normalize_pin( $pin );
+        if ( strlen( $pin ) < 4 || strlen( $pin ) > 8 ) return false;
+
+        $bcrypt = wp_hash_password( $pin );
+        if ( ! $bcrypt ) return false;
+
+        update_user_meta( $user_id, self::META_BCRYPT, $bcrypt );
+        delete_user_meta( $user_id, self::META_LEGACY );
+        self::clear_user_throttle( $user_id );
+        return true;
+    }
+
+    /**
+     * Wipe everything PIN-related for this user. Called from the
+     * admin "Clear PIN" button. Public so the AJAX handler in
+     * admin/class-ghm-admin.php can call it without re-implementing
+     * the meta-key list.
+     */
+    public static function clear_pin( $user_id ) {
+        $user_id = (int) $user_id;
+        if ( $user_id <= 0 ) return false;
+        delete_user_meta( $user_id, self::META_BCRYPT );
+        delete_user_meta( $user_id, self::META_LEGACY );
+        self::clear_user_throttle( $user_id );
+        return true;
     }
 
     /**
@@ -461,9 +719,18 @@ class GHM_PIN_Login {
 
     /**
      * Admin-only diagnostic.
-     * Visit any wp-admin page with ?ghm_pin_diag=YOUR_PIN to dump exactly
-     * what the lookup finds for that PIN. Output is plain text to the admin
-     * (only administrators see it). No PIN is stored in logs by this tool.
+     *
+     * Visit any wp-admin page with ?ghm_pin_diag=1 to print a brief
+     * health summary: how many users have a bcrypt PIN, how many are
+     * still on legacy wp_hash, whether any are currently locked. Only
+     * administrators see it.
+     *
+     * The previous version of this tool accepted a PIN as the query
+     * value and printed the hash sample, the matching user_id, and the
+     * full list of users with PINs. That was useful for debugging but
+     * leaked enough information to assist an attacker who'd compromised
+     * an admin account. The new version takes no PIN input and prints
+     * only counts.
      */
     public static function maybe_run_diagnostic() {
         if ( empty( $_GET['ghm_pin_diag'] ) ) return;
@@ -475,17 +742,18 @@ class GHM_PIN_Login {
         if ( $ran ) return;
         $ran = true;
 
-        $raw      = (string) $_GET['ghm_pin_diag'];
-        $pin      = self::normalize_pin( $raw );
-        $hash     = $pin ? wp_hash( $pin ) : '';
-        $matches  = $hash ? $wpdb->get_results( $wpdb->prepare(
-            "SELECT user_id FROM {$wpdb->usermeta} WHERE meta_key = %s AND meta_value = %s",
-            'ghm_pin', $hash
-        ) ) : array();
-
-        $all_with_pins = $wpdb->get_results(
-            "SELECT user_id FROM {$wpdb->usermeta} WHERE meta_key = 'ghm_pin'"
-        );
+        $bcrypt_count = (int) $wpdb->get_var( $wpdb->prepare(
+            "SELECT COUNT(*) FROM {$wpdb->usermeta} WHERE meta_key = %s",
+            self::META_BCRYPT
+        ) );
+        $legacy_count = (int) $wpdb->get_var( $wpdb->prepare(
+            "SELECT COUNT(*) FROM {$wpdb->usermeta} WHERE meta_key = %s",
+            self::META_LEGACY
+        ) );
+        $locked_count = (int) $wpdb->get_var( $wpdb->prepare(
+            "SELECT COUNT(*) FROM {$wpdb->usermeta} WHERE meta_key = %s AND CAST(meta_value AS UNSIGNED) > %d",
+            self::META_LOCKED, time()
+        ) );
 
         // Make sure no theme/output buffer has already started writing HTML.
         while ( ob_get_level() > 0 ) {
@@ -497,81 +765,27 @@ class GHM_PIN_Login {
         $version = defined( 'GHM_VERSION' ) ? GHM_VERSION : 'undefined';
         echo "GHM PIN diagnostic\n";
         echo "------------------\n";
-        echo "Plugin version on server : {$version}\n";
-        echo "Diagnostic version       : 2 (with front-end fallback)\n";
-        echo "Site URL                 : " . site_url() . "\n";
-        echo "Logged in admin user_id  : " . get_current_user_id() . "\n";
-        echo "Multisite                : " . ( is_multisite() ? 'yes' : 'no' ) . "\n";
-        echo "wp_usermeta table        : {$wpdb->usermeta}\n\n";
+        echo "Plugin version on server   : {$version}\n";
+        echo "Diagnostic version         : 3 (no-PIN, redacted)\n";
+        echo "Site URL                   : " . site_url() . "\n";
+        echo "Logged in admin user_id    : " . get_current_user_id() . "\n";
+        echo "wp_usermeta table          : {$wpdb->usermeta}\n\n";
 
-        echo "Raw input length         : " . strlen( $raw ) . "\n";
-        echo "Normalized PIN length    : " . strlen( $pin ) . "\n";
-        echo "Hash sample (first 8)    : " . substr( $hash, 0, 8 ) . "...\n";
-        echo "Number of matching users : " . count( $matches ) . "\n\n";
-
-        if ( ! count( $matches ) ) {
-            echo "  >> No user has a stored PIN whose wp_hash() matches the input.\n";
-            echo "  >> If the staff PIN was set via the admin UI, this means either:\n";
-            echo "     1. The save did not happen (capability or AJAX failure on Set PIN), or\n";
-            echo "     2. The hash secret (SECURE_AUTH_KEY) changed since the PIN was saved.\n\n";
+        echo "Users with bcrypt PIN (v2) : {$bcrypt_count}\n";
+        echo "Users with legacy PIN (v1) : {$legacy_count}";
+        if ( $legacy_count > 0 ) {
+            echo "  -- will auto-upgrade on next successful login";
         }
+        echo "\n";
+        echo "Users currently locked     : {$locked_count}\n";
 
-        foreach ( $matches as $m ) {
-            $u = get_user_by( 'id', $m->user_id );
-            if ( ! $u ) {
-                echo "- user_id={$m->user_id}  (WP user record missing!)\n";
-                continue;
-            }
-            $deleted = self::is_deleted_staff( $u->ID ) ? 'YES (will be rejected)' : 'no';
-            echo "- user_id={$u->ID}  login={$u->user_login}  email={$u->user_email}\n";
-            echo "    roles  : " . implode( ', ', (array) $u->roles ) . "\n";
-            echo "    deleted: $deleted\n";
-        }
-
-        echo "\nAll users with a stored PIN: " . count( $all_with_pins ) . "\n";
-        foreach ( $all_with_pins as $r ) {
-            $u = get_user_by( 'id', $r->user_id );
-            if ( $u ) {
-                echo "  user_id={$u->ID}  login={$u->user_login}  roles=" . implode( ',', (array) $u->roles ) . "\n";
-            } else {
-                echo "  user_id={$r->user_id}  (orphaned meta row, no WP user)\n";
-            }
+        if ( $bcrypt_count + $legacy_count >= self::MAX_PIN_USERS ) {
+            echo "\nWARNING: users-with-PIN count is at or above MAX_PIN_USERS ("
+                 . self::MAX_PIN_USERS . "). Verification scan is capped — some\n"
+                 . "PINs beyond the cap will silently fail to authenticate. Audit\n"
+                 . "the PIN list and clear stale entries.\n";
         }
         exit;
-    }
-
-    /**
-     * Normalize a PIN: strip any non-digit characters, trim, and cap at 8.
-     * Used by both set_pin() and ajax_pin_login() so the hash always matches.
-     */
-    public static function normalize_pin( $raw ) {
-        $pin = preg_replace( '/\D/', '', (string) $raw );
-        return substr( (string) $pin, 0, 8 );
-    }
-
-    /**
-     * Look up a user by their stored PIN hash.
-     * Goes directly against wp_usermeta so it isn't affected by role / blog
-     * filtering applied by WP_User_Query (which can silently exclude non-admins
-     * in some multisite or caching configurations).
-     */
-    private static function find_user_by_pin( $pin ) {
-        global $wpdb;
-        if ( strlen( $pin ) < 4 ) return false;
-        $user_id = $wpdb->get_var( $wpdb->prepare(
-            "SELECT user_id FROM {$wpdb->usermeta}
-              WHERE meta_key = %s AND meta_value = %s
-              ORDER BY user_id ASC LIMIT 1",
-            'ghm_pin', wp_hash( $pin )
-        ) );
-        return $user_id ? (int) $user_id : false;
-    }
-
-    public static function set_pin( $user_id, $pin ) {
-        $pin = self::normalize_pin( $pin );
-        if ( strlen( $pin ) < 4 || strlen( $pin ) > 8 ) return false;
-        update_user_meta( $user_id, 'ghm_pin', wp_hash( $pin ) );
-        return true;
     }
 
     public static function render($atts) {

@@ -18,7 +18,17 @@
   <?php else: ?>
   <div class="ghm-cards-grid">
     <?php foreach ($staff as $member):
-      $member_pin_set = $member->wp_user_id ? (bool) get_user_meta( $member->wp_user_id, 'ghm_pin', true ) : false;
+      $member_pin_set = false;
+      $member_locked  = false;
+      if ( $member->wp_user_id ) {
+          // PIN is "set" if the user has either the new bcrypt key
+          // (ghm_pin_v2) or the legacy wp_hash key (ghm_pin) — the
+          // latter still works and gets auto-upgraded on first login.
+          $member_pin_set = (bool) ( get_user_meta( $member->wp_user_id, 'ghm_pin_v2', true )
+                                   || get_user_meta( $member->wp_user_id, 'ghm_pin',    true ) );
+          $until          = (int) get_user_meta( $member->wp_user_id, 'ghm_pin_locked_until', true );
+          $member_locked  = $until > time();
+      }
     ?>
     <div class="ghm-room-card">
       <span class="card-badge ghm-badge <?php echo esc_attr($member->status); ?>"><?php echo ucfirst($member->status); ?></span>
@@ -41,7 +51,9 @@
         <li>
           <span class="label">Front-desk PIN</span>
           <span class="value">
-            <?php if ($member_pin_set): ?>
+            <?php if ($member_locked): ?>
+              <span style="color:var(--ghm-warning);font-size:12px;" title="Locked after too many failed attempts. Set a new PIN to unlock.">⏱ Locked</span>
+            <?php elseif ($member_pin_set): ?>
               <span style="color:var(--ghm-success);font-size:12px;">✓ Set</span>
             <?php else: ?>
               <span style="color:var(--ghm-muted);font-size:12px;">Not set</span>
