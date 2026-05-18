@@ -10,10 +10,26 @@
  */
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'GHM_VERSION',     '3.2.0' );
 define( 'GHM_PLUGIN_DIR',  plugin_dir_path( __FILE__ ) );
 define( 'GHM_PLUGIN_URL',  plugin_dir_url( __FILE__ ) );
 define( 'GHM_PLUGIN_FILE', __FILE__ );
+
+/**
+ * Single source of truth for the plugin version: the "Version:" line
+ * in this file's header. Previously GHM_VERSION was a separate define
+ * that drifted out of sync with the header — the WordPress Plugins
+ * screen reads the header, asset cache-busts read the constant. The
+ * audit caught these at 3.0.0 vs 3.2.2 in a prior state of main;
+ * current state happens to match at 3.2.0, but nothing prevents the
+ * next bump from desyncing again.
+ *
+ * get_file_data() reads only this file's leading comment block, so
+ * the cost is one small file-header parse per request — same hit WP
+ * itself takes on the Plugins screen.
+ */
+$ghm_plugin_data = get_file_data( __FILE__, array( 'Version' => 'Version' ), 'plugin' );
+define( 'GHM_VERSION', ! empty( $ghm_plugin_data['Version'] ) ? $ghm_plugin_data['Version'] : '0.0.0' );
+unset( $ghm_plugin_data );
 
 /* ── Core ────────────────────────────────────────────────────── */
 require_once GHM_PLUGIN_DIR . 'includes/class-ghm-install.php';
@@ -62,8 +78,57 @@ register_deactivation_hook( __FILE__, function() {
     flush_rewrite_rules();
 } );
 
+/**
+ * One-shot rewrite-rule flush.
+ *
+ * register_activation_hook fires before REST routes and CPTs are
+ * registered, so the flush at activation time can't capture those
+ * routes — pretty permalinks for /wp-json/ghm/v1/* and the booking-
+ * confirmation rewrite stayed broken until the operator manually
+ * visited Settings → Permalinks. We set a transient at activation
+ * (and detect version changes in the option), then flush on the
+ * first admin load when all routes have already been registered.
+ *
+ * The transient is one-shot — it deletes itself the moment the
+ * flush runs, so the cost is exactly one extra option write per
+ * upgrade. Hooked at priority 99 so module init has already run.
+ */
+register_activation_hook( __FILE__, function() {
+    set_transient( 'ghm_flush_rewrite', 1, HOUR_IN_SECONDS );
+} );
+add_action( 'admin_init', function() {
+    // Trigger on activation (transient) AND on version upgrades.
+    // Modules added in a release may register new rewrite rules,
+    // and operators rarely visit Permalinks after an update.
+    $stored_version = get_option( 'ghm_installed_version', '' );
+    if ( get_transient( 'ghm_flush_rewrite' ) || $stored_version !== GHM_VERSION ) {
+        delete_transient( 'ghm_flush_rewrite' );
+        update_option( 'ghm_installed_version', GHM_VERSION );
+        flush_rewrite_rules();
+    }
+}, 99 );
+
 /* ── Bootstrap ───────────────────────────────────────────────── */
 function ghm_init() {
+    /**
+     * Load translations. Without this call, none of the __() / _e() /
+     * esc_html__() calls scattered through the codebase actually
+     * translate; they just return the source string verbatim. So
+     * even with a complete .mo file in /languages, every UI string
+     * stays in English.
+     *
+     * Loaded on plugins_loaded (this function's hook) which fires
+     * before any module's text-emitting code — the constraint that
+     * actually matters. WP 6.7+ moved its own bundled-translation
+     * recommendation to 'init', but for plugins 'plugins_loaded' is
+     * still correct, and it's what every other init step here uses.
+     */
+    load_plugin_textdomain(
+        'guesthouse-manager',
+        false,
+        dirname( plugin_basename( GHM_PLUGIN_FILE ) ) . '/languages'
+    );
+
     GHM_Post_Types::init();
     GHM_Admin::init();
     GHM_Ajax::init();

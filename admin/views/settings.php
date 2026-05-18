@@ -20,7 +20,7 @@ if ( isset( $_POST['ghm_save_settings'] ) && check_admin_referer( 'ghm_settings'
         'ghm_gcal_client_id','ghm_gcal_client_secret','ghm_gcal_calendar_id','ghm_api_key',
     );
     foreach ( $text_fields as $f ) update_option( $f, sanitize_text_field( $_POST[$f] ?? '' ) );
-    foreach ( array('ghm_email_notify','ghm_paystack_enabled','ghm_paystack_test_mode','ghm_wa_enabled','ghm_gcal_enabled','ghm_tax_inclusive') as $c ) {
+    foreach ( array('ghm_email_notify','ghm_paystack_enabled','ghm_paystack_test_mode','ghm_wa_enabled','ghm_gcal_enabled','ghm_tax_inclusive','ghm_delete_data_on_uninstall') as $c ) {
         update_option( $c, isset($_POST[$c]) ? 1 : 0 );
     }
     add_settings_error( 'ghm_settings', 'saved', 'Settings saved successfully.', 'success' );
@@ -58,6 +58,19 @@ $active_tab = sanitize_key($_GET['tab'] ?? 'general');
         <div class="ghm-form-field"><label>Default Check-Out Time</label><input type="time" name="ghm_checkout_time" value="<?php echo esc_attr(get_option('ghm_checkout_time','11:00'));?>"></div>
         <div class="ghm-form-field span-2"><label style="flex-direction:row;align-items:center;gap:8px;"><input type="checkbox" name="ghm_email_notify" value="1" <?php checked(get_option('ghm_email_notify',1),1);?>> Send email notifications on new bookings</label></div>
         <div class="ghm-form-field span-2"><label style="flex-direction:row;align-items:center;gap:8px;"><input type="checkbox" name="ghm_email_digest" value="1" <?php checked(get_option('ghm_email_digest',1),1);?>> Send daily digest email to admin at 8am</label></div>
+      </div>
+    </div>
+
+    <div class="ghm-form-section" style="max-width:820px;margin-top:20px;border:1px solid rgba(239,68,68,.2);">
+      <p class="ghm-form-section-title" style="color:var(--ghm-danger);">⚠ Danger Zone</p>
+      <div style="font-size:13px;color:var(--ghm-muted);margin-bottom:10px;">
+        When this plugin is deleted from the Plugins page, by default WordPress leaves all your bookings, customers, payments, and settings in the database — so reinstalling restores everything. Tick the box below ONLY if you want a delete to wipe all GuestHouse Manager data permanently. This affects deletion, not deactivation.
+      </div>
+      <div class="ghm-form-field span-2">
+        <label style="flex-direction:row;align-items:center;gap:8px;color:var(--ghm-danger);">
+          <input type="checkbox" name="ghm_delete_data_on_uninstall" value="1" <?php checked(get_option('ghm_delete_data_on_uninstall',0),1);?>>
+          Delete all plugin data (tables, options, capabilities) when this plugin is uninstalled
+        </label>
       </div>
     </div>
 
