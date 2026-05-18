@@ -99,8 +99,16 @@ class GHM_Shortcodes {
     }
 
     public static function booking_confirmation( $atts ) {
-        $ref     = get_query_var( 'ghm_booking_ref' ) ?: ( $_GET['ref'] ?? '' );
-        $booking = $ref ? GHM_Bookings::get_booking_by_ref( sanitize_text_field( $ref ) ) : null;
+        // Sanitize once at the boundary. The downstream get_booking_by_ref()
+        // uses $wpdb->prepare so SQL injection wasn't reachable, but the
+        // raw value also flows into the template, where it's printed back
+        // on the "ref not found" branch. Keep the cleanup here so every
+        // consumer (admin lookup, template echo, error log) sees the
+        // same trimmed, single-line, ASCII-only string.
+        $ref = (string) ( get_query_var( 'ghm_booking_ref' ) ?: ( $_GET['ref'] ?? '' ) );
+        $ref = sanitize_text_field( $ref );
+
+        $booking = $ref !== '' ? GHM_Bookings::get_booking_by_ref( $ref ) : null;
         ob_start();
         include GHM_PLUGIN_DIR . 'templates/booking-confirmation.php';
         return ob_get_clean();
