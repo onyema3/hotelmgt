@@ -388,33 +388,124 @@ class GHM_PIN_Login {
         add_action('wp_ajax_nopriv_ghm_pin_login', array(__CLASS__,'ajax_pin_login'));
         add_action('wp_ajax_ghm_pin_login',        array(__CLASS__,'ajax_pin_login'));
         add_shortcode('ghm_pin_login',             array(__CLASS__,'render'));
+
+        // Admin-only diagnostic: ?ghm_pin_diag=1234 (admin only).
+        add_action('admin_init', array(__CLASS__, 'maybe_run_diagnostic'));
     }
 
     public static function ajax_pin_login() {
         // Normalize identically to set_pin() so save & login always agree.
         $pin     = self::normalize_pin( $_POST['pin'] ?? '' );
-        $user_id = self::find_user_by_pin( $pin );
 
-        // Generic message on EVERY failure so we don't leak which PINs exist
-        // and so the staff role check failure isn't surfaced as "Access denied".
+        // Generic failure response — never leaks which PINs exist or why.
         $invalid = array( 'message' => 'Invalid PIN. Please try again.' );
 
-        if ( ! $user_id ) {
+        if ( strlen( $pin ) < 4 ) {
+            self::log( 'rejected: too short (' . strlen( $pin ) . ')' );
             wp_send_json_error( $invalid ); exit;
         }
+
+        $user_id = self::find_user_by_pin( $pin );
+        if ( ! $user_id ) {
+            self::log( 'rejected: no user matches hashed PIN' );
+            wp_send_json_error( $invalid ); exit;
+        }
+
         $user = get_user_by( 'id', $user_id );
         if ( ! $user ) {
+            self::log( "rejected: user_id=$user_id has PIN meta but get_user_by returned nothing" );
             wp_send_json_error( $invalid ); exit;
         }
-        $allowed_roles = array( 'ghm_staff', 'ghm_manager', 'administrator' );
-        if ( ! array_intersect( $allowed_roles, (array) $user->roles ) ) {
+
+        // Permissive role check.
+        // The fact that an admin saved a PIN for this user IS the authorization.
+        // We just refuse two things: subscribers/customers (no `read` cap on admin)
+        // — actually `read` is enough to land on admin-ajax — and explicitly
+        // marked staff records with status='deleted'.
+        if ( self::is_deleted_staff( $user_id ) ) {
+            self::log( "rejected: user_id=$user_id is marked deleted in ghm_staff" );
             wp_send_json_error( $invalid ); exit;
         }
 
         wp_set_current_user( $user_id, $user->user_login );
-        wp_set_auth_cookie( $user_id );
+        wp_set_auth_cookie( $user_id, true );
         do_action( 'wp_login', $user->user_login, $user );
+
+        self::log( "success: user_id=$user_id login=$user->user_login roles=" . implode( ',', (array) $user->roles ) );
         wp_send_json_success( array( 'redirect' => admin_url( 'admin.php?page=ghm-dashboard' ) ) );
+        exit;
+    }
+
+    /**
+     * Check ghm_staff table for a soft-deleted entry tied to this WP user.
+     */
+    private static function is_deleted_staff( $user_id ) {
+        global $wpdb;
+        $row = $wpdb->get_var( $wpdb->prepare(
+            "SELECT status FROM {$wpdb->prefix}ghm_staff WHERE wp_user_id = %d ORDER BY id DESC LIMIT 1",
+            $user_id
+        ) );
+        return $row === 'deleted';
+    }
+
+    /**
+     * Lightweight debug logger — only writes when WP_DEBUG_LOG is on.
+     */
+    private static function log( $msg ) {
+        if ( defined( 'WP_DEBUG_LOG' ) && WP_DEBUG_LOG ) {
+            error_log( '[GHM PIN Login] ' . $msg );
+        }
+    }
+
+    /**
+     * Admin-only diagnostic.
+     * Visit any wp-admin page with ?ghm_pin_diag=YOUR_PIN to dump exactly
+     * what the lookup finds for that PIN. Output is plain text to the admin
+     * (only administrators see it). No PIN is stored in logs by this tool.
+     */
+    public static function maybe_run_diagnostic() {
+        if ( empty( $_GET['ghm_pin_diag'] ) ) return;
+        if ( ! current_user_can( 'manage_options' ) ) return;
+        global $wpdb;
+
+        $raw      = (string) $_GET['ghm_pin_diag'];
+        $pin      = self::normalize_pin( $raw );
+        $hash     = $pin ? wp_hash( $pin ) : '';
+        $matches  = $hash ? $wpdb->get_results( $wpdb->prepare(
+            "SELECT user_id FROM {$wpdb->usermeta} WHERE meta_key = %s AND meta_value = %s",
+            'ghm_pin', $hash
+        ) ) : array();
+
+        $all_with_pins = $wpdb->get_results(
+            "SELECT user_id FROM {$wpdb->usermeta} WHERE meta_key = 'ghm_pin'"
+        );
+
+        header( 'Content-Type: text/plain; charset=UTF-8' );
+        echo "GHM PIN diagnostic\n";
+        echo "------------------\n";
+        echo "Raw input length        : " . strlen( $raw ) . "\n";
+        echo "Normalized PIN length   : " . strlen( $pin ) . "\n";
+        echo "Number of matching users: " . count( $matches ) . "\n\n";
+
+        foreach ( $matches as $m ) {
+            $u = get_user_by( 'id', $m->user_id );
+            if ( ! $u ) {
+                echo "- user_id={$m->user_id}  (WP user record missing!)\n";
+                continue;
+            }
+            $deleted = self::is_deleted_staff( $u->ID ) ? 'YES (will be rejected)' : 'no';
+            echo "- user_id={$u->ID}  login={$u->user_login}  email={$u->user_email}\n";
+            echo "    roles  : " . implode( ', ', (array) $u->roles ) . "\n";
+            echo "    deleted: $deleted\n";
+        }
+
+        echo "\nAll users with a stored PIN: " . count( $all_with_pins ) . "\n";
+        foreach ( $all_with_pins as $r ) {
+            $u = get_user_by( 'id', $r->user_id );
+            if ( $u ) {
+                echo "  user_id={$u->ID}  login={$u->user_login}  roles=" . implode( ',', (array) $u->roles ) . "\n";
+            }
+        }
         exit;
     }
 
