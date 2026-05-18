@@ -106,8 +106,11 @@ class GHM_Bookings {
     public static function create_booking( $data ) {
         global $wpdb;
 
-        if ( ! GHM_Rooms::is_room_available( $data['room_id'], $data['check_in'], $data['check_out'] ) ) {
-            return new WP_Error( 'not_available', __( 'Room is not available for the selected dates.', 'guesthouse-manager' ) );
+        $room_id   = absint( $data['room_id']     ?? 0 );
+        $check_in  = sanitize_text_field( $data['check_in']  ?? '' );
+        $check_out = sanitize_text_field( $data['check_out'] ?? '' );
+        if ( ! $room_id || ! $check_in || ! $check_out ) {
+            return new WP_Error( 'invalid_input', __( 'Room and dates are required.', 'guesthouse-manager' ) );
         }
 
         $ref = self::generate_ref();
@@ -123,10 +126,10 @@ class GHM_Bookings {
         $fields = array(
             'booking_ref'      => $ref,
             'customer_id'      => absint( $data['customer_id'] ),
-            'room_id'          => absint( $data['room_id'] ),
+            'room_id'          => $room_id,
             'booking_type'     => sanitize_text_field( $data['booking_type']      ?? 'room' ),
-            'check_in'         => sanitize_text_field( $data['check_in'] ),
-            'check_out'        => sanitize_text_field( $data['check_out'] ),
+            'check_in'         => $check_in,
+            'check_out'        => $check_out,
             'adults'           => absint( $data['adults']                          ?? 1 ),
             'children'         => absint( $data['children']                        ?? 0 ),
             'total_amount'     => (float)( $data['total_amount']                  ?? 0 ),
@@ -141,19 +144,52 @@ class GHM_Bookings {
             'created_by'       => get_current_user_id(),
         );
 
+        // Atomic create. Serialize concurrent attempts for the same room
+        // by locking the room row with SELECT … FOR UPDATE before
+        // re-running the overlap check. Two concurrent requests for the
+        // same room queue at the row lock; the second sees the first's
+        // booking when it re-checks and is rejected cleanly. We also
+        // fold the room-status update and customer-counter increment
+        // into the same transaction so all three rows commit together
+        // (or roll back together on any error).
+        //
+        // Requires InnoDB on the bookings + rooms tables, which is the
+        // default in MySQL 5.5+ and the WordPress baseline.
+        $wpdb->query( 'START TRANSACTION' );
+
+        $room = $wpdb->get_row( $wpdb->prepare(
+            "SELECT id FROM {$wpdb->prefix}ghm_rooms WHERE id = %d FOR UPDATE",
+            $room_id
+        ) );
+        if ( ! $room ) {
+            $wpdb->query( 'ROLLBACK' );
+            return new WP_Error( 'not_found', __( 'Room not found.', 'guesthouse-manager' ) );
+        }
+
+        if ( ! GHM_Rooms::is_room_available( $room_id, $check_in, $check_out ) ) {
+            $wpdb->query( 'ROLLBACK' );
+            return new WP_Error( 'not_available', __( 'Room is not available for the selected dates.', 'guesthouse-manager' ) );
+        }
+
         $result = $wpdb->insert( $wpdb->prefix . 'ghm_bookings', $fields );
-        if ( false === $result ) return new WP_Error( 'db_error', $wpdb->last_error );
+        if ( false === $result ) {
+            $err = $wpdb->last_error;
+            $wpdb->query( 'ROLLBACK' );
+            return new WP_Error( 'db_error', $err );
+        }
 
         $booking_id = $wpdb->insert_id;
 
-        // Mark room as reserved
-        $wpdb->update( $wpdb->prefix . 'ghm_rooms', array( 'status' => 'reserved' ), array( 'id' => $data['room_id'] ) );
+        // Mark room as reserved (in-transaction so it commits with the booking).
+        $wpdb->update( $wpdb->prefix . 'ghm_rooms', array( 'status' => 'reserved' ), array( 'id' => $room_id ) );
 
-        // Increment customer visit count
+        // Increment customer visit count (in-transaction).
         $wpdb->query( $wpdb->prepare(
             "UPDATE {$wpdb->prefix}ghm_customers SET visit_count = visit_count + 1 WHERE id = %d",
-            $data['customer_id']
+            absint( $data['customer_id'] )
         ) );
+
+        $wpdb->query( 'COMMIT' );
 
         self::log( 'created_booking', $booking_id );
         do_action( 'ghm_booking_created', $booking_id, $fields );
