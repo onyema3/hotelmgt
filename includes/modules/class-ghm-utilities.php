@@ -441,9 +441,7 @@ class GHM_PIN_Login {
             return new WP_REST_Response( $error, 200 );
         }
 
-        wp_set_current_user( $user_id, $user->user_login );
-        wp_set_auth_cookie( $user_id, true );
-        do_action( 'wp_login', $user->user_login, $user );
+        self::sign_in_user( $user_id, $user );
 
         self::log( "rest: success user_id=$user_id login=$user->user_login" );
         return new WP_REST_Response( array(
@@ -486,13 +484,45 @@ class GHM_PIN_Login {
             wp_send_json_error( $invalid ); exit;
         }
 
-        wp_set_current_user( $user_id, $user->user_login );
-        wp_set_auth_cookie( $user_id, true );
-        do_action( 'wp_login', $user->user_login, $user );
+        self::sign_in_user( $user_id, $user );
 
         self::log( "success: user_id=$user_id login=$user->user_login roles=" . implode( ',', (array) $user->roles ) );
         wp_send_json_success( array( 'redirect' => admin_url( 'admin.php?page=ghm-dashboard' ) ) );
         exit;
+    }
+
+    /**
+     * Sign a user in via the PIN keypad.
+     *
+     * Detaches GHM_Staff_Access::redirect_staff_on_login (and any other staff
+     * redirect listeners on `wp_login`) before firing the action so they can't
+     * issue a 302 mid-response. Without this, the browser silently follows the
+     * redirect, gets HTML back, fails to parse the expected JSON and reports
+     * "Invalid PIN" — even though authentication itself succeeded.
+     */
+    private static function sign_in_user( $user_id, $user ) {
+        wp_set_current_user( $user_id, $user->user_login );
+        wp_set_auth_cookie( $user_id, true );
+
+        $had_redirect_hook = false;
+        if ( class_exists( 'GHM_Staff_Access' ) && method_exists( 'GHM_Staff_Access', 'redirect_staff_on_login' ) ) {
+            $had_redirect_hook = remove_action(
+                'wp_login',
+                array( 'GHM_Staff_Access', 'redirect_staff_on_login' ),
+                10
+            );
+        }
+
+        do_action( 'wp_login', $user->user_login, $user );
+
+        if ( $had_redirect_hook ) {
+            add_action(
+                'wp_login',
+                array( 'GHM_Staff_Access', 'redirect_staff_on_login' ),
+                10,
+                2
+            );
+        }
     }
 
     /**
