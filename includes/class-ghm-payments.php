@@ -26,6 +26,18 @@ class GHM_Payments {
     /**
      * Record a payment against a booking.
      *
+     * Idempotency:
+     *  - When transaction_id is non-empty, a unique (booking_id,
+     *    transaction_id) index in MySQL prevents duplicate rows, and
+     *    this method short-circuits to the existing row's id rather
+     *    than failing. That covers the "user double-clicks Record
+     *    Payment" case (UI also debounces) and gateway-webhook +
+     *    on-page-verify both arriving for the same charge.
+     *  - When transaction_id is empty (cash, in-person card without
+     *    a reference), the index ignores the row (NULL semantics)
+     *    so multiple manual payments against the same booking still
+     *    work. The UI is the only guard there, by design.
+     *
      * After saving the payment:
      *  - Updates paid_amount and payment_status on the booking.
      *  - Calls GHM_Bookings::maybe_confirm_on_payment() which upgrades
@@ -44,6 +56,25 @@ class GHM_Payments {
             return new WP_Error( 'invalid_amount', 'Payment amount must be greater than zero.' );
         }
 
+        // Normalize transaction_id: empty string → NULL so the unique
+        // index uses NULL-distinct semantics for manual payments.
+        $tx_raw = sanitize_text_field( $data['transaction_id'] ?? '' );
+        $tx_id  = $tx_raw === '' ? null : $tx_raw;
+
+        // Idempotency pre-check: if a row already exists with this
+        // (booking_id, transaction_id), return that id rather than
+        // inserting a second row. Only meaningful when tx_id is
+        // non-null — manual payments aren't deduplicated.
+        if ( $tx_id !== null ) {
+            $existing = $wpdb->get_var( $wpdb->prepare(
+                "SELECT id FROM {$wpdb->prefix}ghm_payments WHERE booking_id = %d AND transaction_id = %s LIMIT 1",
+                $booking->id, $tx_id
+            ) );
+            if ( $existing ) {
+                return (int) $existing;
+            }
+        }
+
         // --- 1. Insert payment record ---
         $fields = array(
             'booking_id'      => $booking->id,
@@ -52,12 +83,29 @@ class GHM_Payments {
             'currency'        => sanitize_text_field( $data['currency']       ?? get_option( 'ghm_currency', 'NGN' ) ),
             'method'          => sanitize_text_field( $data['method']         ?? 'cash' ),
             'status'          => 'completed',
-            'transaction_id'  => sanitize_text_field( $data['transaction_id'] ?? '' ),
+            'transaction_id'  => $tx_id,
             'notes'           => sanitize_textarea_field( $data['notes']      ?? '' ),
             'created_by'      => get_current_user_id(),
         );
 
-        $wpdb->insert( $wpdb->prefix . 'ghm_payments', $fields );
+        $insert_ok = $wpdb->insert( $wpdb->prefix . 'ghm_payments', $fields );
+
+        // Race fallback: two parallel inserts may both pass the
+        // pre-check. The second one fails the UNIQUE index on
+        // (booking_id, transaction_id) — handle that as idempotent
+        // success by returning the row that won the race.
+        if ( false === $insert_ok ) {
+            if ( $tx_id !== null && false !== stripos( (string) $wpdb->last_error, 'duplicate' ) ) {
+                $existing = $wpdb->get_var( $wpdb->prepare(
+                    "SELECT id FROM {$wpdb->prefix}ghm_payments WHERE booking_id = %d AND transaction_id = %s LIMIT 1",
+                    $booking->id, $tx_id
+                ) );
+                if ( $existing ) {
+                    return (int) $existing;
+                }
+            }
+            return new WP_Error( 'db_error', $wpdb->last_error ?: 'Could not record payment.' );
+        }
         $payment_id = $wpdb->insert_id;
 
         // --- 2. Recalculate paid_amount on booking ---
