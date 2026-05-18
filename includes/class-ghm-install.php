@@ -232,10 +232,16 @@ function ghm_create_module_tables() {
     // Add new columns to bookings table if missing (safe upgrade)
     global $wpdb;
     $new_columns = array(
-        'source'          => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN source VARCHAR(100) DEFAULT NULL AFTER notes",
-        'discount_code'   => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN discount_code VARCHAR(50) DEFAULT NULL AFTER source",
-        'discount_amount' => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN discount_amount DECIMAL(10,2) DEFAULT 0.00 AFTER discount_code",
-        'tax_amount'      => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN tax_amount DECIMAL(10,2) DEFAULT 0.00 AFTER discount_amount",
+        'source'           => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN source VARCHAR(100) DEFAULT NULL AFTER notes",
+        'discount_code'    => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN discount_code VARCHAR(50) DEFAULT NULL AFTER source",
+        'discount_amount'  => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN discount_amount DECIMAL(10,2) DEFAULT 0.00 AFTER discount_code",
+        'tax_amount'       => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN tax_amount DECIMAL(10,2) DEFAULT 0.00 AFTER discount_amount",
+        // Gating column for pre-arrival emails. NULL = not sent yet.
+        // The hourly cron query (GHM_Scheduler::send_pre_arrival_emails)
+        // already filters on this column; without it, the query throws
+        // a silent "Unknown column" warning and pre-arrival emails
+        // never fire on fresh installs.
+        'pre_arrival_sent' => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN pre_arrival_sent DATETIME DEFAULT NULL AFTER tax_amount",
     );
     foreach ( $new_columns as $col_name => $sql ) {
         $exists = $wpdb->get_results( $wpdb->prepare(
