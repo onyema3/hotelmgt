@@ -15,44 +15,113 @@ class GHM_REST_API {
         $ns = 'ghm/v1';
 
         // Rooms
-        register_rest_route($ns, '/rooms',           array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_rooms'),        'permission_callback'=>array(__CLASS__,'auth')));
-        register_rest_route($ns, '/rooms/(?P<id>\d+)',array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_room'),         'permission_callback'=>array(__CLASS__,'auth')));
+        register_rest_route($ns, '/rooms',           array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_rooms'),        'permission_callback'=>array(__CLASS__,'auth_read')));
+        register_rest_route($ns, '/rooms/(?P<id>\d+)',array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_room'),         'permission_callback'=>array(__CLASS__,'auth_read')));
         register_rest_route($ns, '/rooms/available', array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_available'),    'permission_callback'=>'__return_true'));
 
         // Bookings
-        register_rest_route($ns, '/bookings',              array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_bookings'),   'permission_callback'=>array(__CLASS__,'auth')));
-        register_rest_route($ns, '/bookings',              array('methods'=>'POST', 'callback'=>array(__CLASS__,'create_booking'), 'permission_callback'=>array(__CLASS__,'auth')));
-        register_rest_route($ns, '/bookings/(?P<id>\d+)',  array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_booking'),    'permission_callback'=>array(__CLASS__,'auth')));
-        register_rest_route($ns, '/bookings/(?P<id>\d+)',  array('methods'=>'PATCH','callback'=>array(__CLASS__,'update_booking'), 'permission_callback'=>array(__CLASS__,'auth')));
+        register_rest_route($ns, '/bookings',              array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_bookings'),   'permission_callback'=>array(__CLASS__,'auth_read')));
+        register_rest_route($ns, '/bookings',              array('methods'=>'POST', 'callback'=>array(__CLASS__,'create_booking'), 'permission_callback'=>array(__CLASS__,'auth_write')));
+        register_rest_route($ns, '/bookings/(?P<id>\d+)',  array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_booking'),    'permission_callback'=>array(__CLASS__,'auth_read')));
+        register_rest_route($ns, '/bookings/(?P<id>\d+)',  array('methods'=>'PATCH','callback'=>array(__CLASS__,'update_booking'), 'permission_callback'=>array(__CLASS__,'auth_write')));
 
         // Customers
-        register_rest_route($ns, '/customers',             array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_customers'),  'permission_callback'=>array(__CLASS__,'auth')));
-        register_rest_route($ns, '/customers',             array('methods'=>'POST', 'callback'=>array(__CLASS__,'create_customer'),'permission_callback'=>array(__CLASS__,'auth')));
-        register_rest_route($ns, '/customers/(?P<id>\d+)', array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_customer'),   'permission_callback'=>array(__CLASS__,'auth')));
+        register_rest_route($ns, '/customers',             array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_customers'),  'permission_callback'=>array(__CLASS__,'auth_read')));
+        register_rest_route($ns, '/customers',             array('methods'=>'POST', 'callback'=>array(__CLASS__,'create_customer'),'permission_callback'=>array(__CLASS__,'auth_write')));
+        register_rest_route($ns, '/customers/(?P<id>\d+)', array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_customer'),   'permission_callback'=>array(__CLASS__,'auth_read')));
 
         // Payments
-        register_rest_route($ns, '/payments',              array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_payments'),   'permission_callback'=>array(__CLASS__,'auth')));
-        register_rest_route($ns, '/payments',              array('methods'=>'POST', 'callback'=>array(__CLASS__,'create_payment'), 'permission_callback'=>array(__CLASS__,'auth')));
+        register_rest_route($ns, '/payments',              array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_payments'),   'permission_callback'=>array(__CLASS__,'auth_read')));
+        register_rest_route($ns, '/payments',              array('methods'=>'POST', 'callback'=>array(__CLASS__,'create_payment'), 'permission_callback'=>array(__CLASS__,'auth_write')));
 
         // Reports
-        register_rest_route($ns, '/reports/summary',       array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_summary'),    'permission_callback'=>array(__CLASS__,'auth')));
-        register_rest_route($ns, '/reports/revenue',       array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_revenue'),    'permission_callback'=>array(__CLASS__,'auth')));
+        register_rest_route($ns, '/reports/summary',       array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_summary'),    'permission_callback'=>array(__CLASS__,'auth_read')));
+        register_rest_route($ns, '/reports/revenue',       array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_revenue'),    'permission_callback'=>array(__CLASS__,'auth_read')));
 
         // Housekeeping
-        register_rest_route($ns, '/housekeeping',          array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_housekeeping'),'permission_callback'=>array(__CLASS__,'auth')));
-        register_rest_route($ns, '/housekeeping/(?P<room_id>\d+)', array('methods'=>'PATCH','callback'=>array(__CLASS__,'update_housekeeping'),'permission_callback'=>array(__CLASS__,'auth')));
+        register_rest_route($ns, '/housekeeping',          array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_housekeeping'),'permission_callback'=>array(__CLASS__,'auth_read')));
+        register_rest_route($ns, '/housekeeping/(?P<room_id>\d+)', array('methods'=>'PATCH','callback'=>array(__CLASS__,'update_housekeeping'),'permission_callback'=>array(__CLASS__,'auth_write')));
 
         // iCal export (public)
         register_rest_route($ns, '/ical/(?P<room_id>\d+)', array('methods'=>'GET',  'callback'=>array(__CLASS__,'get_ical'),       'permission_callback'=>'__return_true'));
     }
 
-    /* ── Auth ────────────────────────────────────────────────────── */
+    /* ── Auth ────────────────────────────────────────────────────────
+     *
+     * Two callbacks, one per surface:
+     *
+     *   auth_read  — used for GET routes. Either:
+     *                 • valid X-GHM-API-Key, OR
+     *                 • a logged-in user with ghm_manage_bookings or manage_options.
+     *
+     *   auth_write — used for POST / PATCH routes. Either:
+     *                 • valid X-GHM-API-Key (server-to-server), OR
+     *                 • a logged-in user with ghm_manage_bookings or
+     *                   manage_options AND a valid wp_rest nonce
+     *                   (X-WP-Nonce header or _wpnonce param).
+     *
+     * The previous auth() permitted any ghm_staff user to POST/PATCH
+     * with no nonce and no audit, which means a stolen session cookie
+     * (or a CSRF chain via any plugin-rendered admin page) could
+     * create or edit bookings, customers, payments, and housekeeping
+     * records. The split below closes that.
+     */
+
+    /** Common: verify the X-GHM-API-Key header (or ?api_key=) using a
+     *  timing-safe compare. Returns true if a non-empty stored key
+     *  matches the supplied key, false otherwise.
+     */
+    private static function check_api_key( $request ) {
+        $stored = (string) get_option( 'ghm_api_key', '' );
+        if ( $stored === '' ) return false;
+        $supplied = (string) ( $request->get_header( 'X-GHM-API-Key' ) ?: $request->get_param( 'api_key' ) );
+        if ( $supplied === '' ) return false;
+        return hash_equals( $stored, $supplied );
+    }
+
+    public static function auth_read( $request ) {
+        if ( self::check_api_key( $request ) ) return true;
+        return current_user_can( 'ghm_manage_bookings' ) || current_user_can( 'manage_options' );
+    }
+
+    public static function auth_write( $request ) {
+        // Server-to-server with API key bypasses the nonce requirement,
+        // because external callers cannot obtain a wp_rest nonce.
+        if ( self::check_api_key( $request ) ) return true;
+
+        // Logged-in users still need an explicit nonce so a stolen
+        // cookie or a CSRF chain cannot mutate state silently. WordPress
+        // checks the wp_rest nonce header automatically, but only sets
+        // the current user when it sees one — so the check below is
+        // also a defense-in-depth assertion.
+        $nonce = $request->get_header( 'X-WP-Nonce' );
+        if ( ! $nonce ) {
+            $nonce = $request->get_param( '_wpnonce' );
+        }
+        if ( ! $nonce || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
+            return new WP_Error(
+                'rest_forbidden',
+                __( 'Write requests require a valid X-GHM-API-Key or a wp_rest nonce.', 'guesthouse-manager' ),
+                array( 'status' => 401 )
+            );
+        }
+        if ( ! ( current_user_can( 'ghm_manage_bookings' ) || current_user_can( 'manage_options' ) ) ) {
+            return new WP_Error(
+                'rest_forbidden',
+                __( 'You do not have permission to perform this action.', 'guesthouse-manager' ),
+                array( 'status' => 403 )
+            );
+        }
+        return true;
+    }
+
+    /**
+     * @deprecated since batch-1a. Kept for any third-party code that
+     * registered extra routes against ::auth — falls through to the
+     * stricter read-side check.
+     */
     public static function auth( $request ) {
-        $api_key = $request->get_header('X-GHM-API-Key') ?: ($request->get_param('api_key') ?? '');
-        $stored  = get_option('ghm_api_key','');
-        if ( $stored && $api_key === $stored ) return true;
-        // Also accept WP auth
-        return current_user_can('ghm_manage_bookings') || current_user_can('manage_options');
+        return self::auth_read( $request );
     }
 
     /* ── Rooms ───────────────────────────────────────────────────── */
