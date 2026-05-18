@@ -389,8 +389,10 @@ class GHM_PIN_Login {
         add_action('wp_ajax_ghm_pin_login',        array(__CLASS__,'ajax_pin_login'));
         add_shortcode('ghm_pin_login',             array(__CLASS__,'render'));
 
-        // Admin-only diagnostic: ?ghm_pin_diag=1234 (admin only).
+        // Admin-only diagnostic. Works both inside wp-admin and on the front-end.
+        // Visit any page with ?ghm_pin_diag=YOUR_PIN while logged in as admin.
         add_action('admin_init', array(__CLASS__, 'maybe_run_diagnostic'));
+        add_action('init',       array(__CLASS__, 'maybe_run_diagnostic'));
     }
 
     public static function ajax_pin_login() {
@@ -465,8 +467,13 @@ class GHM_PIN_Login {
      */
     public static function maybe_run_diagnostic() {
         if ( empty( $_GET['ghm_pin_diag'] ) ) return;
-        if ( ! current_user_can( 'manage_options' ) ) return;
+        if ( ! is_user_logged_in() || ! current_user_can( 'manage_options' ) ) return;
         global $wpdb;
+
+        // Only run once per request so the admin_init + init hooks don't double-fire.
+        static $ran = false;
+        if ( $ran ) return;
+        $ran = true;
 
         $raw      = (string) $_GET['ghm_pin_diag'];
         $pin      = self::normalize_pin( $raw );
@@ -480,12 +487,34 @@ class GHM_PIN_Login {
             "SELECT user_id FROM {$wpdb->usermeta} WHERE meta_key = 'ghm_pin'"
         );
 
+        // Make sure no theme/output buffer has already started writing HTML.
+        while ( ob_get_level() > 0 ) {
+            @ob_end_clean();
+        }
+        nocache_headers();
         header( 'Content-Type: text/plain; charset=UTF-8' );
+
+        $version = defined( 'GHM_VERSION' ) ? GHM_VERSION : 'undefined';
         echo "GHM PIN diagnostic\n";
         echo "------------------\n";
-        echo "Raw input length        : " . strlen( $raw ) . "\n";
-        echo "Normalized PIN length   : " . strlen( $pin ) . "\n";
-        echo "Number of matching users: " . count( $matches ) . "\n\n";
+        echo "Plugin version on server : {$version}\n";
+        echo "Diagnostic version       : 2 (with front-end fallback)\n";
+        echo "Site URL                 : " . site_url() . "\n";
+        echo "Logged in admin user_id  : " . get_current_user_id() . "\n";
+        echo "Multisite                : " . ( is_multisite() ? 'yes' : 'no' ) . "\n";
+        echo "wp_usermeta table        : {$wpdb->usermeta}\n\n";
+
+        echo "Raw input length         : " . strlen( $raw ) . "\n";
+        echo "Normalized PIN length    : " . strlen( $pin ) . "\n";
+        echo "Hash sample (first 8)    : " . substr( $hash, 0, 8 ) . "...\n";
+        echo "Number of matching users : " . count( $matches ) . "\n\n";
+
+        if ( ! count( $matches ) ) {
+            echo "  >> No user has a stored PIN whose wp_hash() matches the input.\n";
+            echo "  >> If the staff PIN was set via the admin UI, this means either:\n";
+            echo "     1. The save did not happen (capability or AJAX failure on Set PIN), or\n";
+            echo "     2. The hash secret (SECURE_AUTH_KEY) changed since the PIN was saved.\n\n";
+        }
 
         foreach ( $matches as $m ) {
             $u = get_user_by( 'id', $m->user_id );
@@ -504,6 +533,8 @@ class GHM_PIN_Login {
             $u = get_user_by( 'id', $r->user_id );
             if ( $u ) {
                 echo "  user_id={$u->ID}  login={$u->user_login}  roles=" . implode( ',', (array) $u->roles ) . "\n";
+            } else {
+                echo "  user_id={$r->user_id}  (orphaned meta row, no WP user)\n";
             }
         }
         exit;
