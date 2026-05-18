@@ -385,14 +385,71 @@ class GHM_Permissions {
 class GHM_PIN_Login {
 
     public static function init() {
+        // Legacy admin-ajax path (kept for backwards compatibility).
         add_action('wp_ajax_nopriv_ghm_pin_login', array(__CLASS__,'ajax_pin_login'));
         add_action('wp_ajax_ghm_pin_login',        array(__CLASS__,'ajax_pin_login'));
         add_shortcode('ghm_pin_login',             array(__CLASS__,'render'));
+
+        // Dedicated REST endpoint — bypasses caching plugins & stale nonces.
+        add_action('rest_api_init', array(__CLASS__, 'register_rest_route'));
 
         // Admin-only diagnostic. Works both inside wp-admin and on the front-end.
         // Visit any page with ?ghm_pin_diag=YOUR_PIN while logged in as admin.
         add_action('admin_init', array(__CLASS__, 'maybe_run_diagnostic'));
         add_action('init',       array(__CLASS__, 'maybe_run_diagnostic'));
+    }
+
+    /**
+     * REST endpoint: POST /wp-json/ghm/v1/pin-login
+     * Accepts { pin } and on success returns { success:true, redirect:... }.
+     * Skips the WP nonce gymnastics that were silently failing on cached pages.
+     */
+    public static function register_rest_route() {
+        register_rest_route( 'ghm/v1', '/pin-login', array(
+            'methods'             => 'POST',
+            'permission_callback' => '__return_true',
+            'callback'            => array( __CLASS__, 'rest_pin_login' ),
+            'args'                => array(
+                'pin' => array( 'required' => true, 'type' => 'string' ),
+            ),
+        ) );
+    }
+
+    public static function rest_pin_login( WP_REST_Request $request ) {
+        $pin   = self::normalize_pin( $request->get_param( 'pin' ) );
+        $error = array( 'success' => false, 'message' => 'Invalid PIN. Please try again.' );
+
+        if ( strlen( $pin ) < 4 ) {
+            self::log( 'rest: rejected (too short ' . strlen( $pin ) . ')' );
+            return new WP_REST_Response( $error, 200 );
+        }
+
+        $user_id = self::find_user_by_pin( $pin );
+        if ( ! $user_id ) {
+            self::log( 'rest: rejected (no hash match)' );
+            return new WP_REST_Response( $error, 200 );
+        }
+
+        $user = get_user_by( 'id', $user_id );
+        if ( ! $user ) {
+            self::log( "rest: rejected (user_id=$user_id has meta but no WP user)" );
+            return new WP_REST_Response( $error, 200 );
+        }
+
+        if ( self::is_deleted_staff( $user_id ) ) {
+            self::log( "rest: rejected (user_id=$user_id soft-deleted)" );
+            return new WP_REST_Response( $error, 200 );
+        }
+
+        wp_set_current_user( $user_id, $user->user_login );
+        wp_set_auth_cookie( $user_id, true );
+        do_action( 'wp_login', $user->user_login, $user );
+
+        self::log( "rest: success user_id=$user_id login=$user->user_login" );
+        return new WP_REST_Response( array(
+            'success'  => true,
+            'redirect' => admin_url( 'admin.php?page=ghm-dashboard' ),
+        ), 200 );
     }
 
     public static function ajax_pin_login() {
@@ -585,6 +642,10 @@ class GHM_PIN_Login {
         }
         ob_start();
         $hotel = get_option('ghm_hotel_name',get_bloginfo('name'));
+
+        // Inline-printed REST URL — guaranteed fresh on every page render
+        // (so even cached pages serve a valid endpoint).
+        $rest_url = esc_url_raw( rest_url( 'ghm/v1/pin-login' ) );
         ?>
         <div class="ghm-public-wrap ghm-pin-wrap" style="max-width:400px;margin:60px auto;">
           <div class="ghm-pin-card" style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:32px;box-shadow:0 4px 32px rgba(0,0,0,.08);text-align:center;font-family:'DM Sans',sans-serif;">
@@ -612,6 +673,7 @@ class GHM_PIN_Login {
           var busy = false;
           var $display = $('#ghm-pin-display');
           var $alert   = $('#ghm-pin-alert');
+          var REST_URL = <?php echo wp_json_encode( $rest_url ); ?>;
 
           function updateDisplay(){
             $display.text(pin.length ? '●  '.repeat(pin.length).trim() : '·  ·  ·  ·');
@@ -626,42 +688,78 @@ class GHM_PIN_Login {
 
           function clearError(){ $alert.hide().empty(); }
 
-          function doLogin(){
-            if (busy) return;
-            if (pin.length < 4) {
-              showError('Please enter at least 4 digits.');
-              return;
+          function handleResponse(res){
+            if (res && res.success && res.redirect) {
+              window.location.href = res.redirect;
+              return true;
             }
+            if (res && res.success && res.data && res.data.redirect) {
+              // legacy admin-ajax shape
+              window.location.href = res.data.redirect;
+              return true;
+            }
+            return false;
+          }
+
+          function fallbackAdminAjax(){
             if (typeof ghmPublic === 'undefined' || !ghmPublic.ajax_url) {
               showError('Login is not configured on this page. Please contact admin.');
+              busy = false;
+              $('.ghm-pin-key').prop('disabled', false);
               return;
             }
-            clearError();
-            busy = true;
-            $('.ghm-pin-key').prop('disabled', true);
-
             $.post(ghmPublic.ajax_url, {
               action: 'ghm_pin_login',
               nonce : ghmPublic.nonce,
               pin   : pin
             })
             .done(function(res){
-              if (res && res.success && res.data && res.data.redirect) {
-                window.location.href = res.data.redirect;
-                return;
-              }
+              if (handleResponse(res)) return;
               showError((res && res.data && res.data.message) || 'Invalid PIN. Please try again.');
-              pin = '';
-              updateDisplay();
+              pin = ''; updateDisplay();
             })
             .fail(function(){
               showError('Network error. Please try again.');
-              pin = '';
-              updateDisplay();
+              pin = ''; updateDisplay();
             })
             .always(function(){
               busy = false;
               $('.ghm-pin-key').prop('disabled', false);
+            });
+          }
+
+          function doLogin(){
+            if (busy) return;
+            if (pin.length < 4) {
+              showError('Please enter at least 4 digits.');
+              return;
+            }
+            clearError();
+            busy = true;
+            $('.ghm-pin-key').prop('disabled', true);
+
+            // Try REST endpoint first (immune to stale page-cache nonces).
+            $.ajax({
+              url: REST_URL,
+              method: 'POST',
+              dataType: 'json',
+              data: { pin: pin }
+            })
+            .done(function(res){
+              if (handleResponse(res)) return;
+              if (res && res.success === false) {
+                showError(res.message || 'Invalid PIN. Please try again.');
+                pin = ''; updateDisplay();
+                busy = false;
+                $('.ghm-pin-key').prop('disabled', false);
+                return;
+              }
+              // Unknown shape — fall back
+              fallbackAdminAjax();
+            })
+            .fail(function(){
+              // REST blocked or 404 — fall back to admin-ajax
+              fallbackAdminAjax();
             });
           }
 
