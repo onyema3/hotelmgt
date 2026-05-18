@@ -227,7 +227,17 @@ class GHM_Admin {
     /* ── AJAX: PIN ──────────────────────────────────────────────── */
     public static function ajax_clear_staff_pin() {
         self::verify( 'manage_options' );
-        delete_user_meta( absint( $_POST['user_id'] ), 'ghm_pin' );
+        $user_id = absint( $_POST['user_id'] ?? 0 );
+        if ( ! $user_id ) {
+            wp_send_json_error( array( 'message' => 'Invalid user.' ) ); exit;
+        }
+        // Use the helper so both legacy (ghm_pin) + v2 (ghm_pin_v2) meta
+        // and any active lockout state are wiped together.
+        if ( class_exists( 'GHM_PIN_Login' ) && method_exists( 'GHM_PIN_Login', 'clear_pin' ) ) {
+            GHM_PIN_Login::clear_pin( $user_id );
+        } else {
+            delete_user_meta( $user_id, 'ghm_pin' );
+        }
         wp_send_json_success(); exit;
     }
 
@@ -238,9 +248,14 @@ class GHM_Admin {
         if ( ! $user_id || strlen( $pin ) < 4 || strlen( $pin ) > 8 ) {
             wp_send_json_error( array( 'message' => 'PIN must be 4–8 digits.' ) ); exit;
         }
-        // Reuse existing helper if available, else store hashed PIN directly
+        // GHM_PIN_Login::set_pin() now stores bcrypt, removes any legacy
+        // wp_hash row, and clears any lockout state — so setting a PIN
+        // is also the operator's "unlock this user" path.
         if ( class_exists( 'GHM_PIN_Login' ) && method_exists( 'GHM_PIN_Login', 'set_pin' ) ) {
-            GHM_PIN_Login::set_pin( $user_id, $pin );
+            $ok = GHM_PIN_Login::set_pin( $user_id, $pin );
+            if ( ! $ok ) {
+                wp_send_json_error( array( 'message' => 'Could not save PIN.' ) ); exit;
+            }
         } else {
             update_user_meta( $user_id, 'ghm_pin', wp_hash( $pin ) );
         }
