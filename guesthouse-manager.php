@@ -110,6 +110,25 @@ add_action( 'admin_init', function() {
 
 /* ── Bootstrap ───────────────────────────────────────────────── */
 function ghm_init() {
+    /**
+     * Load translations. Without this call, none of the __() / _e() /
+     * esc_html__() calls scattered through the codebase actually
+     * translate; they just return the source string verbatim. So
+     * even with a complete .mo file in /languages, every UI string
+     * stays in English.
+     *
+     * Loaded on plugins_loaded (this function's hook) which fires
+     * before any module's text-emitting code — the constraint that
+     * actually matters. WP 6.7+ moved its own bundled-translation
+     * recommendation to 'init', but for plugins 'plugins_loaded' is
+     * still correct, and it's what every other init step here uses.
+     */
+    load_plugin_textdomain(
+        'guesthouse-manager',
+        false,
+        dirname( plugin_basename( GHM_PLUGIN_FILE ) ) . '/languages'
+    );
+
     GHM_Post_Types::init();
     GHM_Admin::init();
     GHM_Ajax::init();
