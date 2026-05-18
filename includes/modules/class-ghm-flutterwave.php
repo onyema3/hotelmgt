@@ -33,6 +33,16 @@ class GHM_Flutterwave {
             : get_option('ghm_flw_live_secret_key','');
     }
 
+    /**
+     * Dedicated webhook signature ("Secret hash") configured in
+     * Flutterwave Dashboard → Settings → Webhooks. This MUST be a
+     * different value from the API secret key. Flutterwave sends it
+     * back in the `verif-hash` header on every webhook delivery.
+     */
+    public static function webhook_hash() {
+        return (string) get_option( 'ghm_flw_webhook_hash', '' );
+    }
+
     public static function is_enabled() {
         return (bool)get_option('ghm_flw_enabled',0) && self::public_key() && self::secret_key();
     }
@@ -172,9 +182,21 @@ class GHM_Flutterwave {
     }
 
     public static function handle_webhook() {
-        $secret   = self::secret_key();
-        $sig      = $_SERVER['HTTP_VERIF_HASH'] ?? '';
-        if ($sig !== $secret) { http_response_code(401); exit('Unauthorized'); }
+        // Compare against the dedicated webhook secret-hash (set in
+        // Flutterwave Dashboard → Settings → Webhooks). Previously this
+        // compared the verif-hash header to the API secret key, which
+        // meant anyone who learned the secret key could forge webhooks
+        // — and Flutterwave never sends the secret key in this header
+        // anyway, so legitimate webhooks were also rejected unless the
+        // operator pasted the secret key into the dashboard's hash
+        // field by mistake.
+        $expected = self::webhook_hash();
+        $sig      = isset( $_SERVER['HTTP_VERIF_HASH'] ) ? (string) $_SERVER['HTTP_VERIF_HASH'] : '';
+
+        if ( $expected === '' || ! hash_equals( $expected, $sig ) ) {
+            http_response_code( 401 );
+            exit( 'Unauthorized' );
+        }
 
         $body  = json_decode(file_get_contents('php://input'), true);
         if (!$body || $body['event'] !== 'charge.completed') { http_response_code(200); exit('OK'); }

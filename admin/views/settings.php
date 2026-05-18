@@ -1,7 +1,7 @@
 <?php if ( ! defined( 'ABSPATH' ) ) exit;
 if ( isset( $_POST['ghm_save_settings'] ) && check_admin_referer( 'ghm_settings' ) ) {
     // Save Flutterwave and scheduler fields
-    foreach(array('ghm_flw_test_public_key','ghm_flw_test_secret_key','ghm_flw_live_public_key','ghm_flw_live_secret_key') as $f) {
+    foreach(array('ghm_flw_test_public_key','ghm_flw_test_secret_key','ghm_flw_live_public_key','ghm_flw_live_secret_key','ghm_flw_webhook_hash') as $f) {
         update_option($f, sanitize_text_field($_POST[$f]??''));
     }
     foreach(array('ghm_flw_enabled','ghm_flw_test_mode','ghm_email_digest','ghm_dynamic_pricing_enabled') as $c) {
@@ -100,6 +100,10 @@ $active_tab = sanitize_key($_GET['tab'] ?? 'general');
         <div class="ghm-form-field"><label>Test Secret Key</label><input type="password" name="ghm_flw_test_secret_key" value="<?php echo esc_attr(get_option('ghm_flw_test_secret_key',''));?>" placeholder="FLWSECK_TEST-…"></div>
         <div class="ghm-form-field"><label>Live Public Key</label><input type="text" name="ghm_flw_live_public_key" value="<?php echo esc_attr(get_option('ghm_flw_live_public_key',''));?>" placeholder="FLWPUBK-…"></div>
         <div class="ghm-form-field"><label>Live Secret Key</label><input type="password" name="ghm_flw_live_secret_key" value="<?php echo esc_attr(get_option('ghm_flw_live_secret_key',''));?>" placeholder="FLWSECK-…"></div>
+        <div class="ghm-form-field span-2">
+          <label>Webhook Secret Hash <small style="color:var(--ghm-warning);">(distinct from secret key — set this in Flutterwave dashboard under Settings → Webhooks)</small></label>
+          <input type="password" name="ghm_flw_webhook_hash" value="<?php echo esc_attr(get_option('ghm_flw_webhook_hash',''));?>" placeholder="A random string you set in the Flutterwave dashboard">
+        </div>
       </div>
       <?php if(class_exists('GHM_Flutterwave')): ?>
       <div style="margin-top:12px;background:var(--ghm-surface2);border:1px solid var(--ghm-border);border-radius:7px;padding:12px 16px;">

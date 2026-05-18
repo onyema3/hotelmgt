@@ -232,10 +232,16 @@ function ghm_create_module_tables() {
     // Add new columns to bookings table if missing (safe upgrade)
     global $wpdb;
     $new_columns = array(
-        'source'          => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN source VARCHAR(100) DEFAULT NULL AFTER notes",
-        'discount_code'   => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN discount_code VARCHAR(50) DEFAULT NULL AFTER source",
-        'discount_amount' => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN discount_amount DECIMAL(10,2) DEFAULT 0.00 AFTER discount_code",
-        'tax_amount'      => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN tax_amount DECIMAL(10,2) DEFAULT 0.00 AFTER discount_amount",
+        'source'           => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN source VARCHAR(100) DEFAULT NULL AFTER notes",
+        'discount_code'    => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN discount_code VARCHAR(50) DEFAULT NULL AFTER source",
+        'discount_amount'  => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN discount_amount DECIMAL(10,2) DEFAULT 0.00 AFTER discount_code",
+        'tax_amount'       => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN tax_amount DECIMAL(10,2) DEFAULT 0.00 AFTER discount_amount",
+        // Gating column for pre-arrival emails. NULL = not sent yet.
+        // The hourly cron query (GHM_Scheduler::send_pre_arrival_emails)
+        // already filters on this column; without it, the query throws
+        // a silent "Unknown column" warning and pre-arrival emails
+        // never fire on fresh installs.
+        'pre_arrival_sent' => "ALTER TABLE {$wpdb->prefix}ghm_bookings ADD COLUMN pre_arrival_sent DATETIME DEFAULT NULL AFTER tax_amount",
     );
     foreach ( $new_columns as $col_name => $sql ) {
         $exists = $wpdb->get_results( $wpdb->prepare(
@@ -244,6 +250,38 @@ function ghm_create_module_tables() {
         ) );
         if ( empty( $exists ) ) {
             $wpdb->query( $sql );
+        }
+    }
+
+    // Idempotency for payments: prevent duplicate (booking_id,
+    // transaction_id) rows when a non-empty transaction_id is supplied.
+    // MySQL treats NULLs as distinct in a UNIQUE index, so cash and
+    // other manual payments (which have NULL transaction_id) can still
+    // be entered multiple times against the same booking — only
+    // gateway/reference-bearing payments are deduplicated.
+    $payments_table = $wpdb->prefix . 'ghm_payments';
+    $idx_exists = $wpdb->get_var( $wpdb->prepare(
+        "SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND INDEX_NAME = %s",
+        $payments_table, 'booking_tx_unique'
+    ) );
+    if ( ! $idx_exists ) {
+        // Step 1: normalize legacy empty-string transaction_ids to NULL
+        // so NULL-distinct semantics apply. Empty strings would
+        // otherwise count as duplicates and block the ALTER below.
+        $wpdb->query( "UPDATE $payments_table SET transaction_id = NULL WHERE transaction_id = ''" );
+
+        // Step 2: add the unique index. If real duplicates already
+        // exist (e.g. historical double-clicks), the ALTER fails and
+        // the unique constraint is skipped — the runtime check in
+        // GHM_Payments::record_payment() and the UI debounce still
+        // guard against new duplicates. We log the failure so the
+        // operator can resolve it manually rather than silently.
+        $suppressed = $wpdb->suppress_errors( true );
+        $ok = $wpdb->query( "ALTER TABLE $payments_table ADD UNIQUE KEY booking_tx_unique (booking_id, transaction_id)" );
+        $wpdb->suppress_errors( $suppressed );
+        if ( false === $ok && function_exists( 'error_log' ) ) {
+            error_log( '[GHM] Could not add booking_tx_unique index on ' . $payments_table . ': ' . $wpdb->last_error );
         }
     }
 }

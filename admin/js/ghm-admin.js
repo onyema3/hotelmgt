@@ -742,7 +742,18 @@
       self.openModal('Record Payment', body, foot);
 
       document.getElementById('ghm-btn-cancel').addEventListener('click', ()=>self.closeModal());
+
+      // Debounce guard: an in-flight flag on top of btnBusy prevents
+      // a double-fire if the user double-clicks fast, hits Enter on
+      // the amount field, or AJAX takes long enough that they
+      // re-click. The DB has a unique index on (booking_id,
+      // transaction_id) and record_payment() short-circuits dupes,
+      // but for cash payments (transaction_id is empty / NULL) the
+      // UI is the only guard against a double row.
+      let submitting = false;
+
       document.getElementById('ghm-btn-submit').addEventListener('click', ()=>{
+        if (submitting) return;
         const $btn   = $('#ghm-btn-submit');
         const amount = document.querySelector('#ghm-active-modal [name="amount"]').value;
         if (!amount || +amount <= 0) {
@@ -750,12 +761,13 @@
           document.querySelector('#ghm-active-modal [name="amount"]').focus();
           return;
         }
+        submitting = true;
         const data        = self.collectForm();
         data.booking_id   = bookingId;
         self.btnBusy($btn,'Recording');
         self.post('ghm_record_payment', data)
           .then(()=>{ self.toast('Payment recorded!','success'); self.closeModal(); setTimeout(()=>location.reload(),800); })
-          .catch(err=>{ self.toast(err||'Failed.','error'); self.btnReset($btn); });
+          .catch(err=>{ self.toast(err||'Failed.','error'); self.btnReset($btn); submitting = false; });
       });
     },
 

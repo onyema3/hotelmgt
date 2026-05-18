@@ -64,11 +64,21 @@ class GHM_Scheduler {
 
         foreach ($bookings as $b) {
             self::send_pre_arrival($b);
-            // Mark as sent
-            $wpdb->query($wpdb->prepare(
-                "UPDATE {$wpdb->prefix}ghm_bookings SET notes = CONCAT(IFNULL(notes,''), %s) WHERE id = %d",
-                ' [pre_arrival_sent:'.date('Y-m-d H:i:s').']', $b->id
-            ));
+            // Mark the booking as having had its pre-arrival email sent
+            // so the next cron tick (~1 hour later) doesn't re-send.
+            // This previously appended a tag into `notes`, which (a) was
+            // never read by the gating WHERE clause, so the email
+            // re-sent every cron tick for ~4 hours, and (b) on fresh
+            // installs the WHERE clause referenced a non-existent
+            // column and the whole query threw silently — meaning
+            // pre-arrival emails never fired at all.
+            $wpdb->update(
+                $wpdb->prefix . 'ghm_bookings',
+                array( 'pre_arrival_sent' => current_time( 'mysql' ) ),
+                array( 'id' => $b->id ),
+                array( '%s' ),
+                array( '%d' )
+            );
         }
     }
 
