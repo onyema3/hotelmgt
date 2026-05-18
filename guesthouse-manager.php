@@ -78,6 +78,36 @@ register_deactivation_hook( __FILE__, function() {
     flush_rewrite_rules();
 } );
 
+/**
+ * One-shot rewrite-rule flush.
+ *
+ * register_activation_hook fires before REST routes and CPTs are
+ * registered, so the flush at activation time can't capture those
+ * routes — pretty permalinks for /wp-json/ghm/v1/* and the booking-
+ * confirmation rewrite stayed broken until the operator manually
+ * visited Settings → Permalinks. We set a transient at activation
+ * (and detect version changes in the option), then flush on the
+ * first admin load when all routes have already been registered.
+ *
+ * The transient is one-shot — it deletes itself the moment the
+ * flush runs, so the cost is exactly one extra option write per
+ * upgrade. Hooked at priority 99 so module init has already run.
+ */
+register_activation_hook( __FILE__, function() {
+    set_transient( 'ghm_flush_rewrite', 1, HOUR_IN_SECONDS );
+} );
+add_action( 'admin_init', function() {
+    // Trigger on activation (transient) AND on version upgrades.
+    // Modules added in a release may register new rewrite rules,
+    // and operators rarely visit Permalinks after an update.
+    $stored_version = get_option( 'ghm_installed_version', '' );
+    if ( get_transient( 'ghm_flush_rewrite' ) || $stored_version !== GHM_VERSION ) {
+        delete_transient( 'ghm_flush_rewrite' );
+        update_option( 'ghm_installed_version', GHM_VERSION );
+        flush_rewrite_rules();
+    }
+}, 99 );
+
 /* ── Bootstrap ───────────────────────────────────────────────── */
 function ghm_init() {
     GHM_Post_Types::init();
