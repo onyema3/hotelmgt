@@ -24,6 +24,7 @@ class GHM_Admin {
             array( 'ghm-payments',     'Payments',         'ghm_manage_payments',   'page_payments'     ),
             array( 'ghm-deposits',     'Deposits',         'ghm_manage_payments',   'page_deposits'     ),
             array( 'ghm-housekeeping', 'Housekeeping',     'ghm_manage_bookings',   'page_housekeeping' ),
+            array( 'ghm-service-requests', 'Service Requests', 'ghm_manage_bookings', 'page_service_requests' ),
             array( 'ghm-maintenance',  'Maintenance',      'ghm_manage_rooms',      'page_maintenance'  ),
             array( 'ghm-discounts',    'Discounts',        'ghm_manage_payments',   'page_discounts'    ),
             array( 'ghm-waitlist',     'Waitlist',         'ghm_manage_bookings',   'page_waitlist'     ),
@@ -76,6 +77,10 @@ class GHM_Admin {
             'ghm_toggle_dynamic_pricing'  => 'ajax_toggle_dynamic_pricing',
             // Permissions / PIN
             'ghm_clear_staff_pin'         => 'ajax_clear_staff_pin',
+            'ghm_set_staff_pin'           => 'ajax_set_staff_pin',
+            // Service Requests (admin)
+            'ghm_update_service_request'  => 'ajax_update_service_request',
+            'ghm_delete_service_request'  => 'ajax_delete_service_request',
             // Reviews (admin approve)
             'ghm_approve_review'          => 'ajax_approve_review',
             'ghm_delete_review'           => 'ajax_delete_review',
@@ -226,6 +231,47 @@ class GHM_Admin {
         wp_send_json_success(); exit;
     }
 
+    public static function ajax_set_staff_pin() {
+        self::verify( 'manage_options' );
+        $user_id = absint( $_POST['user_id'] ?? 0 );
+        $pin     = preg_replace( '/\D/', '', (string) ( $_POST['pin'] ?? '' ) );
+        if ( ! $user_id || strlen( $pin ) < 4 || strlen( $pin ) > 8 ) {
+            wp_send_json_error( array( 'message' => 'PIN must be 4–8 digits.' ) ); exit;
+        }
+        // Reuse existing helper if available, else store hashed PIN directly
+        if ( class_exists( 'GHM_PIN_Login' ) && method_exists( 'GHM_PIN_Login', 'set_pin' ) ) {
+            GHM_PIN_Login::set_pin( $user_id, $pin );
+        } else {
+            update_user_meta( $user_id, 'ghm_pin', wp_hash( $pin ) );
+        }
+        wp_send_json_success(); exit;
+    }
+
+    /* ── AJAX: Service Requests (admin) ─────────────────────────── */
+    public static function ajax_update_service_request() {
+        self::verify( 'ghm_manage_bookings' );
+        global $wpdb;
+        $id     = absint( $_POST['id'] ?? 0 );
+        $status = sanitize_key( $_POST['status'] ?? '' );
+        $allowed = array( 'pending', 'in_progress', 'resolved', 'cancelled' );
+        if ( ! $id || ! in_array( $status, $allowed, true ) ) {
+            wp_send_json_error( array( 'message' => 'Invalid request.' ) ); exit;
+        }
+        $update = array( 'status' => $status );
+        if ( $status === 'resolved' ) {
+            $update['resolved_at'] = current_time( 'mysql' );
+        }
+        $wpdb->update( $wpdb->prefix . 'ghm_service_requests', $update, array( 'id' => $id ) );
+        wp_send_json_success(); exit;
+    }
+
+    public static function ajax_delete_service_request() {
+        self::verify( 'ghm_manage_bookings' );
+        global $wpdb;
+        $wpdb->delete( $wpdb->prefix . 'ghm_service_requests', array( 'id' => absint( $_POST['id'] ?? 0 ) ) );
+        wp_send_json_success(); exit;
+    }
+
     /* ── AJAX: Reviews ──────────────────────────────────────────── */
     public static function ajax_approve_review() {
         self::verify( 'manage_options' );
@@ -312,6 +358,10 @@ class GHM_Admin {
 
     public static function page_housekeeping() {
         include GHM_PLUGIN_DIR . 'admin/views/modules/housekeeping.php';
+    }
+
+    public static function page_service_requests() {
+        include GHM_PLUGIN_DIR . 'admin/views/modules/service-requests.php';
     }
 
     public static function page_maintenance() {

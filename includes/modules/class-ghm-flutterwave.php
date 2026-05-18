@@ -14,6 +14,8 @@ class GHM_Flutterwave {
         add_action('wp_ajax_nopriv_ghm_flw_init',   array(__CLASS__,'ajax_init'));
         add_action('wp_ajax_ghm_flw_verify',        array(__CLASS__,'ajax_verify'));
         add_action('wp_ajax_nopriv_ghm_flw_verify', array(__CLASS__,'ajax_verify'));
+        add_action('wp_ajax_ghm_flw_verify_balance',        array(__CLASS__,'ajax_verify_balance'));
+        add_action('wp_ajax_nopriv_ghm_flw_verify_balance', array(__CLASS__,'ajax_verify_balance'));
         add_action('wp_ajax_nopriv_ghm_flw_webhook',array(__CLASS__,'handle_webhook'));
         add_action('wp_ajax_ghm_flw_webhook',       array(__CLASS__,'handle_webhook'));
         add_action('wp_enqueue_scripts',            array(__CLASS__,'maybe_enqueue'));
@@ -119,6 +121,53 @@ class GHM_Flutterwave {
 
         $booking = GHM_Bookings::get_booking($booking_id);
         wp_send_json_success(array('booking_ref'=>$booking->booking_ref,'amount'=>$amount_paid));
+        exit;
+    }
+
+    /**
+     * Verify a Flutterwave payment made for the balance on an EXISTING booking
+     * (called from the guest portal). Records the payment and updates booking status.
+     */
+    public static function ajax_verify_balance() {
+        if ( ! check_ajax_referer( 'ghm_public_nonce', 'nonce', false ) ) {
+            wp_send_json_error( array( 'message' => 'Security check failed.' ) ); exit;
+        }
+        $booking_id = absint( $_POST['booking_id']     ?? 0 );
+        $tx_ref     = sanitize_text_field( $_POST['tx_ref']         ?? '' );
+        $trx_id     = sanitize_text_field( $_POST['transaction_id'] ?? '' );
+        if ( ! $booking_id || ( ! $tx_ref && ! $trx_id ) ) {
+            wp_send_json_error( array( 'message' => 'Missing parameters.' ) ); exit;
+        }
+
+        $booking = GHM_Bookings::get_booking( $booking_id );
+        if ( ! $booking ) {
+            wp_send_json_error( array( 'message' => 'Booking not found.' ) ); exit;
+        }
+
+        $result = self::verify_on_flutterwave( $trx_id ?: $tx_ref );
+        if ( is_wp_error( $result ) ) {
+            wp_send_json_error( array( 'message' => $result->get_error_message() ) ); exit;
+        }
+        if ( ($result['status'] ?? '') !== 'successful' ) {
+            wp_send_json_error( array( 'message' => 'Payment was not successful.' ) ); exit;
+        }
+
+        $amount_paid = (float) $result['amount'];
+        GHM_Payments::record_payment( array(
+            'booking_id'     => $booking_id,
+            'amount'         => $amount_paid,
+            'currency'       => $result['currency'] ?? get_option( 'ghm_currency', 'NGN' ),
+            'method'         => 'online',
+            'transaction_id' => $tx_ref ?: $trx_id,
+            'notes'          => 'Flutterwave (portal balance): ' . ( $result['payment_type'] ?? '' )
+                                . ' — ' . ( $result['processor_response'] ?? '' ),
+        ) );
+
+        $booking = GHM_Bookings::get_booking( $booking_id );
+        wp_send_json_success( array(
+            'booking_ref' => $booking->booking_ref,
+            'amount'      => $amount_paid,
+        ) );
         exit;
     }
 
