@@ -486,11 +486,16 @@
 
       // Customer search
       let csTimer;
-      document.getElementById('ghm-cs-search').addEventListener('input', function(){
+      const csInput = document.getElementById('ghm-cs-search');
+      const csIdEl  = document.getElementById('ghm-cs-id');
+      const csDrop  = document.getElementById('ghm-cs-drop');
+      csInput.addEventListener('input', function(){
         clearTimeout(csTimer);
         const q = this.value.trim();
-        const $drop = $('#ghm-cs-drop');
-        if (q.length < 2) { $drop.hide(); return; }
+        const $drop = $(csDrop);
+        // Clear previously selected customer when user edits the field
+        if (csIdEl.value) csIdEl.value = '';
+        if (q.length < 1) { $drop.hide().empty(); return; }
         csTimer = setTimeout(()=>{
           self.post('ghm_search_customers', {q}).then(results => {
             if (!results || !results.length) {
@@ -510,12 +515,21 @@
         }, 300);
       });
 
-      // Use mousedown so it fires before blur hides the dropdown
-      $(document).on('mousedown.ghm-cs', '.ghm-cs-opt', function(e){
+      // Bind selection DIRECTLY to the dropdown (scoped) — the modal's
+      // stopPropagation prevents document-level delegated handlers from firing.
+      // Use mousedown so it fires before blur hides the dropdown.
+      $(csDrop).on('mousedown', '.ghm-cs-opt', function(e){
         e.preventDefault();
-        document.getElementById('ghm-cs-id').value    = $(this).data('id');
-        document.getElementById('ghm-cs-search').value = $(this).data('name');
-        $('#ghm-cs-drop').hide();
+        csIdEl.value      = $(this).data('id');
+        csInput.value     = $(this).data('name');
+        $(csDrop).hide();
+      });
+
+      // Hide dropdown when clicking elsewhere inside the modal
+      $('#ghm-active-modal').on('mousedown.ghm-cs-out', function(e){
+        if (!$(e.target).closest('#ghm-cs-search, #ghm-cs-drop').length) {
+          $(csDrop).hide();
+        }
       });
     },
 

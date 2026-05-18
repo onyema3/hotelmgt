@@ -147,7 +147,7 @@ $reviewed    = !empty($review);
          class="ghm-portal-btn ghm-portal-btn-outline">
         📄 Download Invoice
       </a>
-      <?php if ($balance > 0 && GHM_Paystack::is_enabled() && $booking->status !== 'cancelled'): ?>
+      <?php if ($balance > 0 && class_exists('GHM_Paystack') && GHM_Paystack::is_enabled() && $booking->status !== 'cancelled'): ?>
       <button class="ghm-portal-btn ghm-portal-btn-paystack" id="ghm-portal-pay-btn"
               data-booking="<?php echo $booking->id; ?>"
               data-amount="<?php echo $balance; ?>"
@@ -155,6 +155,17 @@ $reviewed    = !empty($review);
               data-name="<?php echo esc_attr($customer->first_name.' '.$customer->last_name); ?>"
               data-ref="<?php echo esc_attr($booking->booking_ref); ?>">
         💳 Pay Balance <?php echo $sym.number_format($balance,2); ?> with Paystack
+      </button>
+      <?php endif; ?>
+      <?php if ($balance > 0 && class_exists('GHM_Flutterwave') && GHM_Flutterwave::is_enabled() && $booking->status !== 'cancelled'): ?>
+      <button class="ghm-portal-btn ghm-portal-btn-primary" id="ghm-portal-pay-flw-btn"
+              data-booking="<?php echo $booking->id; ?>"
+              data-amount="<?php echo $balance; ?>"
+              data-email="<?php echo esc_attr($customer->email); ?>"
+              data-name="<?php echo esc_attr($customer->first_name.' '.$customer->last_name); ?>"
+              data-phone="<?php echo esc_attr($customer->phone ?? ''); ?>"
+              data-ref="<?php echo esc_attr($booking->booking_ref); ?>">
+        💳 Pay Balance <?php echo $sym.number_format($balance,2); ?> with Flutterwave
       </button>
       <?php endif; ?>
     </div>
@@ -229,11 +240,14 @@ $reviewed    = !empty($review);
       <h3 class="ghm-portal-card-title">📋 Your Requests</h3>
       <?php foreach ($service_requests as $sr):
         $sr_status_color = $sr->status==='resolved' ? '#3ecf8e' : ($sr->status==='in_progress' ? '#f59e0b' : '#9ca3af');
+        $sr_label_full   = $service_types[$sr->type] ?? ucfirst($sr->type);
+        // Extract leading emoji (the labels start with one) for the icon column
+        $sr_icon         = function_exists('mb_substr') ? trim(mb_substr($sr_label_full, 0, 2)) : '💬';
       ?>
       <div style="display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid #f3f4f6;">
-        <span style="font-size:20px;"><?php echo array_values($service_types)[$sr->type] ?? '💬'; ?></span>
+        <span style="font-size:20px;"><?php echo esc_html($sr_icon ?: '💬'); ?></span>
         <div style="flex:1;">
-          <div style="font-size:13px;font-weight:600;color:#1a1a2e;"><?php echo esc_html($service_types[$sr->type] ?? ucfirst($sr->type)); ?></div>
+          <div style="font-size:13px;font-weight:600;color:#1a1a2e;"><?php echo esc_html($sr_label_full); ?></div>
           <?php if ($sr->message): ?><div style="font-size:13px;color:#6b7280;margin-top:2px;"><?php echo esc_html($sr->message); ?></div><?php endif; ?>
           <div style="font-size:11px;color:#9ca3af;margin-top:4px;"><?php echo date('M j, g:i A', strtotime($sr->created_at)); ?></div>
         </div>
@@ -312,6 +326,9 @@ $reviewed    = !empty($review);
 
 </div><!-- /ghm-portal-wrap -->
 
-<?php if (GHM_Paystack::is_enabled()): ?>
+<?php if (class_exists('GHM_Paystack') && GHM_Paystack::is_enabled()): ?>
 <script src="https://js.paystack.co/v2/inline.js"></script>
+<?php endif; ?>
+<?php if (class_exists('GHM_Flutterwave') && GHM_Flutterwave::is_enabled()): ?>
+<script src="https://checkout.flutterwave.com/v3.js"></script>
 <?php endif; ?>
