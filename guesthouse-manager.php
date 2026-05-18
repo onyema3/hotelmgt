@@ -10,10 +10,26 @@
  */
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'GHM_VERSION',     '3.2.0' );
 define( 'GHM_PLUGIN_DIR',  plugin_dir_path( __FILE__ ) );
 define( 'GHM_PLUGIN_URL',  plugin_dir_url( __FILE__ ) );
 define( 'GHM_PLUGIN_FILE', __FILE__ );
+
+/**
+ * Single source of truth for the plugin version: the "Version:" line
+ * in this file's header. Previously GHM_VERSION was a separate define
+ * that drifted out of sync with the header — the WordPress Plugins
+ * screen reads the header, asset cache-busts read the constant. The
+ * audit caught these at 3.0.0 vs 3.2.2 in a prior state of main;
+ * current state happens to match at 3.2.0, but nothing prevents the
+ * next bump from desyncing again.
+ *
+ * get_file_data() reads only this file's leading comment block, so
+ * the cost is one small file-header parse per request — same hit WP
+ * itself takes on the Plugins screen.
+ */
+$ghm_plugin_data = get_file_data( __FILE__, array( 'Version' => 'Version' ), 'plugin' );
+define( 'GHM_VERSION', ! empty( $ghm_plugin_data['Version'] ) ? $ghm_plugin_data['Version'] : '0.0.0' );
+unset( $ghm_plugin_data );
 
 /* ── Core ────────────────────────────────────────────────────── */
 require_once GHM_PLUGIN_DIR . 'includes/class-ghm-install.php';
