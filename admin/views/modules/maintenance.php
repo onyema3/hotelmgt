@@ -64,7 +64,13 @@ $priority_colors = array('urgent'=>'#ef4444','high'=>'#f59e0b','normal'=>'#60a5f
 (function($){
   $(document)
     .on('click','#ghm-btn-add-maintenance',function(){
-      const roomOpts = <?php echo json_encode(array_map(function($r){return array('id'=>$r->id;},'name'=>$r->name.' ('.$r->room_number.')'), $rooms));?>;
+      const roomOpts = <?php
+        $opts = array();
+        foreach ($rooms as $r) {
+            $opts[] = array('id' => $r->id, 'name' => $r->name.' ('.$r->room_number.')');
+        }
+        echo wp_json_encode($opts);
+      ?>;
       const cats     = <?php echo json_encode($categories);?>;
       const body = `
         <div class="ghm-form-section">

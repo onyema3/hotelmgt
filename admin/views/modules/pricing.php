@@ -92,7 +92,13 @@ $sym   = get_option('ghm_currency_symbol','₦');
 
 <script>
 (function($){
-  const roomOpts = <?php echo json_encode(array_map(function($r){return array('id'=>$r->id;},'name'=>$r->name.' ('.$r->room_number.')'),$rooms));?>;
+  const roomOpts = <?php
+    $opts = array();
+    foreach ($rooms as $r) {
+        $opts[] = array('id' => $r->id, 'name' => $r->name.' ('.$r->room_number.')');
+    }
+    echo wp_json_encode($opts);
+  ?>;
   const typeOpts = ['room','suite','apartment','workspace','hall'];
 
   function openModal(rule) {

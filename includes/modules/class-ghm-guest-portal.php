@@ -133,6 +133,21 @@ class GHM_Guest_Portal {
                 'nonce'    => wp_create_nonce('ghm_public_nonce'),
             ));
         }
+
+        // Flutterwave for balance payment in portal
+        if ( class_exists('GHM_Flutterwave') && GHM_Flutterwave::is_enabled() ) {
+            wp_enqueue_script('flutterwave-inline','https://checkout.flutterwave.com/v3.js',array(),null,true);
+            wp_localize_script('ghm-portal','ghmFlutterwave',array(
+                'enabled'    => true,
+                'public_key' => GHM_Flutterwave::public_key(),
+                'currency'   => strtoupper(get_option('ghm_currency','NGN')),
+            ));
+            // Ensure the public nonce is available even if Paystack isn't enabled
+            wp_localize_script('ghm-portal','ghmPublic',array(
+                'ajax_url' => admin_url('admin-ajax.php'),
+                'nonce'    => wp_create_nonce('ghm_public_nonce'),
+            ));
+        }
     }
 
     /* ── AJAX: Login ─────────────────────────────────────────────── */

@@ -12,6 +12,7 @@
       this.bindServiceForm();
       this.bindReviewForm();
       this.bindPaystackBalance();
+      this.bindFlutterwaveBalance();
     },
 
     /* ─── Login ──────────────────────────────────────────────── */
@@ -243,6 +244,73 @@
         });
 
         handler.openIframe();
+      });
+    },
+
+    /* ─── Flutterwave Balance Payment ────────────────────────── */
+    bindFlutterwaveBalance() {
+      $(document).on('click', '#ghm-portal-pay-flw-btn', function(){
+        if (typeof FlutterwaveCheckout === 'undefined') {
+          alert('Flutterwave not loaded. Please refresh and try again.');
+          return;
+        }
+        if (!window.ghmFlutterwave || !ghmFlutterwave.public_key) {
+          alert('Flutterwave not configured. Please contact reception.');
+          return;
+        }
+
+        const $btn      = $(this);
+        const bookingId = $btn.data('booking');
+        const amount    = parseFloat($btn.data('amount'));
+        const email     = $btn.data('email');
+        const fullName  = ($btn.data('name') || '').toString();
+        const phone     = ($btn.data('phone') || '').toString();
+        const ref       = $btn.data('ref');
+        const origLabel = $btn.html();
+        const tx_ref    = 'PORTAL-FLW-' + ref + '-' + Date.now();
+
+        $btn.prop('disabled', true).text('Opening payment…');
+
+        FlutterwaveCheckout({
+          public_key: ghmFlutterwave.public_key,
+          tx_ref    : tx_ref,
+          amount    : amount,
+          currency  : ghmFlutterwave.currency || 'NGN',
+          payment_options: 'card,banktransfer,ussd,mobilemoneyghana,mobilemoneyrwanda,mobilemoneyzambia,mpesa',
+          customer: { email: email, name: fullName, phone_number: phone },
+          customizations: {
+            title      : 'Booking Balance Payment',
+            description: 'Balance for booking ' + ref,
+          },
+          meta: { booking_ref: ref, booking_id: bookingId },
+          onclose: function(){
+            $btn.prop('disabled', false).html(origLabel);
+          },
+          callback: function(response){
+            $btn.text('Verifying…');
+            const verifyNonce = (window.ghmPublic && ghmPublic.nonce) ? ghmPublic.nonce : ghmPortal.nonce;
+            $.post(ghmPortal.ajax_url, {
+              action        : 'ghm_flw_verify_balance',
+              nonce         : verifyNonce,
+              tx_ref        : response.tx_ref || tx_ref,
+              transaction_id: response.transaction_id || '',
+              booking_id    : bookingId,
+            })
+            .done(res => {
+              if (res.success) {
+                Portal.showAlert('✓ Payment successful! Your booking is confirmed.', 'success');
+                setTimeout(() => window.location.reload(), 1500);
+              } else {
+                Portal.showAlert((res.data ? res.data.message : '') || 'Verification failed. Contact reception with ref: ' + tx_ref, 'error');
+                $btn.prop('disabled', false).html(origLabel);
+              }
+            })
+            .fail(() => {
+              Portal.showAlert('Could not verify payment. Contact reception with ref: ' + tx_ref, 'error');
+              $btn.prop('disabled', false).html(origLabel);
+            });
+          }
+        });
       });
     },
 
