@@ -432,43 +432,129 @@ class GHM_PIN_Login {
         ob_start();
         $hotel = get_option('ghm_hotel_name',get_bloginfo('name'));
         ?>
-        <div class="ghm-public-wrap" style="max-width:400px;margin:60px auto;">
-          <div class="ghm-booking-form-wrap" style="text-align:center;">
+        <div class="ghm-public-wrap ghm-pin-wrap" style="max-width:400px;margin:60px auto;">
+          <div class="ghm-pin-card" style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:32px;box-shadow:0 4px 32px rgba(0,0,0,.08);text-align:center;font-family:'DM Sans',sans-serif;">
             <div style="font-size:48px;margin-bottom:12px;">🏨</div>
-            <h2 style="font-family:'Playfair Display',serif;color:#1a1a2e;"><?php echo esc_html($hotel);?></h2>
-            <p style="color:#6b7280;font-size:14px;margin-bottom:24px;">Staff Quick Login</p>
-            <div id="ghm-pin-display" style="font-size:32px;letter-spacing:12px;color:#1a1a2e;background:#f3f4f6;border-radius:8px;padding:14px;margin-bottom:16px;min-height:60px;">
+            <h2 style="font-family:'Playfair Display',serif;color:#1a1a2e;margin:0 0 4px;"><?php echo esc_html($hotel);?></h2>
+            <p style="color:#6b7280;font-size:14px;margin:0 0 24px;">Staff Quick Login</p>
+            <div id="ghm-pin-display" aria-live="polite" style="font-size:32px;letter-spacing:12px;color:#1a1a2e;background:#f3f4f6;border-radius:8px;padding:14px;margin-bottom:16px;min-height:60px;">
               ·  ·  ·  ·
             </div>
-            <div id="ghm-pin-alert" style="display:none;padding:10px;border-radius:8px;font-size:13px;margin-bottom:12px;"></div>
+            <div id="ghm-pin-alert" role="alert" style="display:none;padding:10px;border-radius:8px;font-size:13px;margin-bottom:12px;"></div>
             <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:280px;margin:0 auto;">
               <?php for($i=1;$i<=9;$i++): ?>
-              <button class="ghm-pin-key ghm-bform-submit" data-val="<?php echo $i;?>" style="padding:16px;font-size:20px;border-radius:10px;justify-content:center;"><?php echo $i;?></button>
+              <button type="button" class="ghm-pin-key" data-val="<?php echo $i;?>" style="padding:16px;font-size:20px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;color:#1a1a2e;cursor:pointer;font-weight:600;font-family:inherit;"><?php echo $i;?></button>
               <?php endfor;?>
-              <button class="ghm-pin-key ghm-bform-submit" data-val="clear" style="padding:16px;font-size:14px;border-radius:10px;justify-content:center;background:#f3f4f6;color:#374151;">⌫</button>
-              <button class="ghm-pin-key ghm-bform-submit" data-val="0" style="padding:16px;font-size:20px;border-radius:10px;justify-content:center;">0</button>
-              <button class="ghm-pin-key ghm-bform-submit" data-val="enter" style="padding:16px;font-size:14px;border-radius:10px;justify-content:center;">→</button>
+              <button type="button" class="ghm-pin-key" data-val="clear" aria-label="Backspace" style="padding:16px;font-size:14px;border-radius:10px;border:1px solid #e5e7eb;background:#f3f4f6;color:#374151;cursor:pointer;font-weight:600;font-family:inherit;">⌫</button>
+              <button type="button" class="ghm-pin-key" data-val="0" style="padding:16px;font-size:20px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;color:#1a1a2e;cursor:pointer;font-weight:600;font-family:inherit;">0</button>
+              <button type="button" class="ghm-pin-key ghm-pin-enter" data-val="enter" aria-label="Sign in" style="padding:16px;font-size:18px;border-radius:10px;border:none;background:linear-gradient(135deg,#c9a84c,#e8c97a);color:#1a1a2e;cursor:pointer;font-weight:700;font-family:inherit;">→</button>
             </div>
+            <p style="font-size:12px;color:#9ca3af;margin:18px 0 0;">Enter your 4–8 digit PIN, then press →</p>
           </div>
         </div>
         <script>
         (function($){
           var pin = '';
-          function updateDisplay(){ $('#ghm-pin-display').text(pin.length ? '●  '.repeat(pin.length).trim() : '·  ·  ·  ·'); }
-          $(document).on('click','.ghm-pin-key',function(){
-            var v = $(this).data('val');
-            if (v==='clear') { pin=pin.slice(0,-1); updateDisplay(); return; }
-            if (v==='enter') { doLogin(); return; }
-            if (pin.length < 8) { pin += v; updateDisplay(); }
-            if (pin.length === 4 || pin.length === 6) doLogin();
-          });
+          var busy = false;
+          var $display = $('#ghm-pin-display');
+          var $alert   = $('#ghm-pin-alert');
+
+          function updateDisplay(){
+            $display.text(pin.length ? '●  '.repeat(pin.length).trim() : '·  ·  ·  ·');
+          }
+
+          function showError(msg){
+            $alert
+              .css({background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b'})
+              .text(msg)
+              .show();
+          }
+
+          function clearError(){ $alert.hide().empty(); }
+
           function doLogin(){
-            $('#ghm-pin-alert').hide();
-            $.post(ghmPublic.ajax_url,{action:'ghm_pin_login',nonce:ghmPublic.nonce,pin:pin},function(res){
-              if(res.success){ window.location.href = res.data.redirect; }
-              else { $('#ghm-pin-alert').removeClass('success').css({background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b'}).text(res.data.message||'Invalid PIN').show(); pin=''; updateDisplay(); }
+            if (busy) return;
+            if (pin.length < 4) {
+              showError('Please enter at least 4 digits.');
+              return;
+            }
+            if (typeof ghmPublic === 'undefined' || !ghmPublic.ajax_url) {
+              showError('Login is not configured on this page. Please contact admin.');
+              return;
+            }
+            clearError();
+            busy = true;
+            $('.ghm-pin-key').prop('disabled', true);
+
+            $.post(ghmPublic.ajax_url, {
+              action: 'ghm_pin_login',
+              nonce : ghmPublic.nonce,
+              pin   : pin
+            })
+            .done(function(res){
+              if (res && res.success && res.data && res.data.redirect) {
+                window.location.href = res.data.redirect;
+                return;
+              }
+              showError((res && res.data && res.data.message) || 'Invalid PIN. Please try again.');
+              pin = '';
+              updateDisplay();
+            })
+            .fail(function(){
+              showError('Network error. Please try again.');
+              pin = '';
+              updateDisplay();
+            })
+            .always(function(){
+              busy = false;
+              $('.ghm-pin-key').prop('disabled', false);
             });
           }
+
+          // Keypad — explicitly cancel any default form behaviour just in case
+          // the shortcode is embedded inside a wrapping form (e.g. page builders).
+          $(document).on('click', '.ghm-pin-key', function(e){
+            e.preventDefault();
+            e.stopPropagation();
+            if (busy) return;
+            var v = String($(this).data('val'));
+            if (v === 'clear') {
+              pin = pin.slice(0, -1);
+              clearError();
+              updateDisplay();
+              return;
+            }
+            if (v === 'enter') {
+              doLogin();
+              return;
+            }
+            if (/^[0-9]$/.test(v) && pin.length < 8) {
+              pin += v;
+              clearError();
+              updateDisplay();
+            }
+          });
+
+          // Allow physical keyboard typing as well
+          $(document).on('keydown', function(e){
+            if (busy) return;
+            if (e.key >= '0' && e.key <= '9' && pin.length < 8) {
+              pin += e.key;
+              clearError();
+              updateDisplay();
+            } else if (e.key === 'Backspace') {
+              pin = pin.slice(0, -1);
+              clearError();
+              updateDisplay();
+            } else if (e.key === 'Enter') {
+              e.preventDefault();
+              doLogin();
+            } else if (e.key === 'Escape') {
+              pin = '';
+              clearError();
+              updateDisplay();
+            }
+          });
         })(jQuery);
         </script>
         <?php
