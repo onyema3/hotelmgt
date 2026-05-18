@@ -34,7 +34,7 @@ class GHM_Discounts {
         ) );
         if ( ! $discount ) return new WP_Error('invalid', 'Discount code not found or inactive.');
 
-        $today = date('Y-m-d');
+        $today = current_time( 'Y-m-d' );
         if ( $discount->valid_from   && $today < $discount->valid_from )  return new WP_Error('not_started','Code is not valid yet.');
         if ( $discount->valid_until  && $today > $discount->valid_until ) return new WP_Error('expired',   'This code has expired.');
         if ( $discount->max_uses !== null && $discount->used_count >= $discount->max_uses ) return new WP_Error('maxed','This code has reached its maximum uses.');

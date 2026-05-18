@@ -55,7 +55,7 @@ class GHM_Invoice {
         $hotel    = $this->hotel;
         $sym      = $this->sym;
         $currency = strtoupper( get_option('ghm_currency', 'NGN') );
-        $today    = date('F j, Y');
+        $today    = current_time( 'F j, Y' );
         $checkin  = date('F j, Y', strtotime($b->check_in));
         $checkout = date('F j, Y', strtotime($b->check_out));
         $nights   = max(1, (int)(new DateTime($b->check_in))->diff(new DateTime($b->check_out))->days);

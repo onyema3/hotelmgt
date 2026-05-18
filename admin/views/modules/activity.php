@@ -1,6 +1,6 @@
 <?php if ( ! defined( 'ABSPATH' ) ) exit;
-$from    = sanitize_text_field($_GET['from'] ?? date('Y-m-01'));
-$to      = sanitize_text_field($_GET['to']   ?? date('Y-m-t'));
+$from    = sanitize_text_field($_GET['from'] ?? current_time('Y-m-01'));
+$to      = sanitize_text_field($_GET['to']   ?? current_time('Y-m-t'));
 $summary = GHM_Activity_Report::get_summary_by_user($from, $to);
 $log     = GHM_Activity_Report::get_report(array('from'=>$from,'to'=>$to,'limit'=>100));
 

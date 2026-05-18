@@ -124,8 +124,8 @@ $sym = get_option('ghm_currency_symbol','$');
     <p class="ghm-form-section-title">📥 Export Reports</p>
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
       <?php
-      $from_month = date('Y-m-01');
-      $to_month   = date('Y-m-t');
+      $from_month = current_time('Y-m-01');
+      $to_month   = current_time('Y-m-t');
       $csv_pay  = wp_nonce_url(admin_url('admin.php?page=ghm-payments&ghm_export=payments&from='.$from_month.'&to='.$to_month),'ghm_export');
       $csv_book = wp_nonce_url(admin_url('admin.php?page=ghm-payments&ghm_export=bookings'),'ghm_export');
       $print_pay= wp_nonce_url(admin_url('admin.php?page=ghm-payments&ghm_export=payments&ghm_export_format=print&from='.$from_month.'&to='.$to_month),'ghm_export');

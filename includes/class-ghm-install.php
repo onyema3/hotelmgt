@@ -246,5 +246,59 @@ function ghm_create_module_tables() {
             $wpdb->query( $sql );
         }
     }
+
+    // Idempotent index migration. dbDelta() above creates the
+    // single-column indexes that ship with the table definitions, but
+    // the queries that hurt most on busy properties are date-range
+    // scans on bookings and ORDER BY created_at DESC LIMIT scans on
+    // activity_log + payments. Without these, MySQL falls back to
+    // full table scans the moment the calendar view, the daily
+    // digest, the activity log, or any revenue widget loads — fine
+    // at 100 bookings, painful at 10,000.
+    //
+    // Each index is checked via INFORMATION_SCHEMA.STATISTICS first
+    // so reactivation, version upgrades, or partial migration runs
+    // don't trip "Duplicate key" errors. Same pattern as the column
+    // adds above.
+    $indexes = array(
+        // Bookings — speeds up calendar / availability range scans
+        // and the dashboard's checkins/checkouts-today queries.
+        $wpdb->prefix . 'ghm_bookings' => array(
+            'check_in_check_out' => '(check_in, check_out)',
+            'status_check_in'    => '(status, check_in)',
+        ),
+        // Activity log — every consumer reads with ORDER BY
+        // created_at DESC LIMIT, and the per-staff report adds a
+        // user_id filter. Single-column then composite gives the
+        // planner two viable plans.
+        $wpdb->prefix . 'ghm_activity_log' => array(
+            'created_at'         => '(created_at)',
+            'user_id_created_at' => '(user_id, created_at)',
+        ),
+        // Payments — revenue widgets filter on DATE(created_at).
+        // The DATE() wrapper means MySQL can't fully use a plain
+        // index, but it still narrows the scan considerably and
+        // helps for SUM(amount) WHERE created_at BETWEEN x AND y
+        // queries that the CSV export also runs.
+        $wpdb->prefix . 'ghm_payments' => array(
+            'created_at' => '(created_at)',
+        ),
+    );
+
+    foreach ( $indexes as $table => $idx_list ) {
+        foreach ( $idx_list as $idx_name => $idx_cols ) {
+            $exists = $wpdb->get_var( $wpdb->prepare(
+                "SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND INDEX_NAME = %s",
+                $table, $idx_name
+            ) );
+            if ( ! $exists ) {
+                // Identifiers can't be parameterised — names come from
+                // the hardcoded array above and the WP-controlled
+                // table prefix.
+                $wpdb->query( "ALTER TABLE `$table` ADD INDEX `$idx_name` $idx_cols" );
+            }
+        }
+    }
 }
 add_action( 'init', 'ghm_create_module_tables', 5 );

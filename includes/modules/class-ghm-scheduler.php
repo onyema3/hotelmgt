@@ -174,7 +174,10 @@ class GHM_Scheduler {
         if (!$admin_email) return;
 
         global $wpdb;
-        $today    = date('Y-m-d');
+        // current_time('Y-m-d') uses WP timezone — critical for the
+        // 8am cron, which would otherwise read "yesterday" as today
+        // for any property whose server is several hours behind.
+        $today    = current_time( 'Y-m-d' );
         $hotel    = get_option('ghm_hotel_name',get_bloginfo('name'));
         $sym      = get_option('ghm_currency_symbol','₦');
 

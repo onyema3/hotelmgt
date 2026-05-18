@@ -5,7 +5,16 @@ class GHM_Reports {
 
     public static function get_dashboard_stats() {
         global $wpdb;
-        $today = date( 'Y-m-d' );
+        // current_time('Y-m-d') honours the WordPress site timezone
+        // (Settings → General → Timezone). Plain date() returned the
+        // server's calendar day, which silently produced off-by-day
+        // counts at midnight for any property whose physical server
+        // sits in a different timezone from the property itself —
+        // common for shared hosting based in the US serving West
+        // African properties, for example.
+        $today        = current_time( 'Y-m-d' );
+        $month_number = (int) current_time( 'n' );
+        $year_number  = (int) current_time( 'Y' );
 
         return array(
             'total_rooms'        => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}ghm_rooms WHERE type != 'workspace'" ),
@@ -21,7 +30,7 @@ class GHM_Reports {
             'total_customers'    => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}ghm_customers" ),
             'total_staff'        => GHM_Staff::count_staff(),
             'revenue_today'      => (float) $wpdb->get_var( $wpdb->prepare( "SELECT SUM(amount) FROM {$wpdb->prefix}ghm_payments WHERE status='completed' AND DATE(created_at) = %s", $today ) ),
-            'revenue_this_month' => (float) $wpdb->get_var( $wpdb->prepare( "SELECT SUM(amount) FROM {$wpdb->prefix}ghm_payments WHERE status='completed' AND MONTH(created_at) = %d AND YEAR(created_at) = %d", date('n'), date('Y') ) ),
+            'revenue_this_month' => (float) $wpdb->get_var( $wpdb->prepare( "SELECT SUM(amount) FROM {$wpdb->prefix}ghm_payments WHERE status='completed' AND MONTH(created_at) = %d AND YEAR(created_at) = %d", $month_number, $year_number ) ),
             'pending_payments'   => (float) $wpdb->get_var( "SELECT SUM(total_amount - paid_amount) FROM {$wpdb->prefix}ghm_bookings WHERE payment_status IN ('unpaid','partial') AND status NOT IN ('cancelled')" ),
         );
     }
@@ -48,8 +57,10 @@ class GHM_Reports {
 
     public static function get_occupancy_rate( $from = '', $to = '' ) {
         global $wpdb;
-        if ( ! $from ) $from = date( 'Y-m-01' );
-        if ( ! $to )   $to   = date( 'Y-m-t' );
+        // Honour WP timezone for the default month-to-date window so
+        // operators in non-server timezones see the right boundaries.
+        if ( ! $from ) $from = current_time( 'Y-m-01' );
+        if ( ! $to )   $to   = current_time( 'Y-m-t' );
 
         $total_rooms = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}ghm_rooms WHERE type != 'workspace' AND status != 'inactive'" );
         if ( ! $total_rooms ) return 0;

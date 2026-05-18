@@ -15,12 +15,12 @@ if ( isset($_GET['ghm_export']) && current_user_can('ghm_manage_payments') && ch
     exit;
 }
 
-$today_rev = GHM_Payments::get_total_revenue( date('Y-m-d'), date('Y-m-d') );
-$month_rev = GHM_Payments::get_total_revenue( date('Y-m-01'), date('Y-m-t') );
+$today_rev = GHM_Payments::get_total_revenue( current_time('Y-m-d'), current_time('Y-m-d') );
+$month_rev = GHM_Payments::get_total_revenue( current_time('Y-m-01'), current_time('Y-m-t') );
 
 // Build export URLs cleanly
 $export_payments_url = wp_nonce_url(
-    admin_url('admin.php?page=ghm-payments&ghm_export=payments&from=' . date('Y-m-01') . '&to=' . date('Y-m-t')),
+    admin_url('admin.php?page=ghm-payments&ghm_export=payments&from=' . current_time('Y-m-01') . '&to=' . current_time('Y-m-t')),
     'ghm_export'
 );
 $export_bookings_url = wp_nonce_url(
@@ -70,12 +70,12 @@ $export_bookings_url = wp_nonce_url(
       <input type="hidden" name="page" value="ghm-payments">
       <div style="display:flex;flex-direction:column;gap:4px;">
         <label style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--ghm-muted);">From</label>
-        <input type="date" name="from" value="<?php echo esc_attr(date('Y-m-01')); ?>"
+        <input type="date" name="from" value="<?php echo esc_attr(current_time('Y-m-01')); ?>"
           style="background:var(--ghm-surface2);border:1px solid var(--ghm-border);border-radius:7px;padding:8px 12px;color:var(--ghm-text);font-size:13px;">
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;">
         <label style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--ghm-muted);">To</label>
-        <input type="date" name="to" value="<?php echo esc_attr(date('Y-m-t')); ?>"
+        <input type="date" name="to" value="<?php echo esc_attr(current_time('Y-m-t')); ?>"
           style="background:var(--ghm-surface2);border:1px solid var(--ghm-border);border-radius:7px;padding:8px 12px;color:var(--ghm-text);font-size:13px;">
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;">
