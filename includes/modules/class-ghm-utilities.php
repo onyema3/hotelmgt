@@ -391,32 +391,64 @@ class GHM_PIN_Login {
     }
 
     public static function ajax_pin_login() {
-        $pin     = sanitize_text_field($_POST['pin'] ?? '');
-        $user_id = self::find_user_by_pin($pin);
-        if (!$user_id) {
-            wp_send_json_error(array('message'=>'Invalid PIN. Please try again.')); exit;
+        // Normalize identically to set_pin() so save & login always agree.
+        $pin     = self::normalize_pin( $_POST['pin'] ?? '' );
+        $user_id = self::find_user_by_pin( $pin );
+
+        // Generic message on EVERY failure so we don't leak which PINs exist
+        // and so the staff role check failure isn't surfaced as "Access denied".
+        $invalid = array( 'message' => 'Invalid PIN. Please try again.' );
+
+        if ( ! $user_id ) {
+            wp_send_json_error( $invalid ); exit;
         }
-        $user = get_user_by('id',$user_id);
-        if (!$user || (!in_array('ghm_staff',(array)$user->roles) && !in_array('ghm_manager',(array)$user->roles) && !in_array('administrator',(array)$user->roles))) {
-            wp_send_json_error(array('message'=>'Access denied.')); exit;
+        $user = get_user_by( 'id', $user_id );
+        if ( ! $user ) {
+            wp_send_json_error( $invalid ); exit;
         }
-        wp_set_current_user($user_id,$user->user_login);
-        wp_set_auth_cookie($user_id);
-        do_action('wp_login',$user->user_login,$user);
-        wp_send_json_success(array('redirect'=>admin_url('admin.php?page=ghm-dashboard')));
+        $allowed_roles = array( 'ghm_staff', 'ghm_manager', 'administrator' );
+        if ( ! array_intersect( $allowed_roles, (array) $user->roles ) ) {
+            wp_send_json_error( $invalid ); exit;
+        }
+
+        wp_set_current_user( $user_id, $user->user_login );
+        wp_set_auth_cookie( $user_id );
+        do_action( 'wp_login', $user->user_login, $user );
+        wp_send_json_success( array( 'redirect' => admin_url( 'admin.php?page=ghm-dashboard' ) ) );
         exit;
     }
 
-    private static function find_user_by_pin($pin) {
-        global $wpdb;
-        if (strlen($pin) < 4) return false;
-        $hashed = get_users(array('meta_key'=>'ghm_pin','meta_value'=>wp_hash($pin),'number'=>1));
-        return !empty($hashed) ? $hashed[0]->ID : false;
+    /**
+     * Normalize a PIN: strip any non-digit characters, trim, and cap at 8.
+     * Used by both set_pin() and ajax_pin_login() so the hash always matches.
+     */
+    public static function normalize_pin( $raw ) {
+        $pin = preg_replace( '/\D/', '', (string) $raw );
+        return substr( (string) $pin, 0, 8 );
     }
 
-    public static function set_pin($user_id, $pin) {
-        if (strlen($pin) < 4) return false;
-        update_user_meta($user_id,'ghm_pin', wp_hash($pin));
+    /**
+     * Look up a user by their stored PIN hash.
+     * Goes directly against wp_usermeta so it isn't affected by role / blog
+     * filtering applied by WP_User_Query (which can silently exclude non-admins
+     * in some multisite or caching configurations).
+     */
+    private static function find_user_by_pin( $pin ) {
+        global $wpdb;
+        if ( strlen( $pin ) < 4 ) return false;
+        $user_id = $wpdb->get_var( $wpdb->prepare(
+            "SELECT user_id FROM {$wpdb->usermeta}
+              WHERE meta_key = %s AND meta_value = %s
+              ORDER BY user_id ASC LIMIT 1",
+            'ghm_pin', wp_hash( $pin )
+        ) );
+        return $user_id ? (int) $user_id : false;
+    }
+
+    public static function set_pin( $user_id, $pin ) {
+        $pin = self::normalize_pin( $pin );
+        if ( strlen( $pin ) < 4 || strlen( $pin ) > 8 ) return false;
+        update_user_meta( $user_id, 'ghm_pin', wp_hash( $pin ) );
         return true;
     }
 
