@@ -84,6 +84,8 @@ class GHM_Admin {
             // Reviews (admin approve)
             'ghm_approve_review'          => 'ajax_approve_review',
             'ghm_delete_review'           => 'ajax_delete_review',
+            // Refunds
+            'ghm_refund_payment'          => 'ajax_refund_payment',
             // Export
             'ghm_export_csv'              => 'ajax_export_csv',
         );
@@ -245,6 +247,20 @@ class GHM_Admin {
             update_user_meta( $user_id, 'ghm_pin', wp_hash( $pin ) );
         }
         wp_send_json_success(); exit;
+    }
+
+    /* ── AJAX: Refunds ──────────────────────────────────────────── */
+    public static function ajax_refund_payment() {
+        self::verify( 'manage_options' );
+        $result = GHM_Payments::refund_payment( array(
+            'payment_id' => absint( $_POST['payment_id'] ?? 0 ),
+            'amount'     => (float) ( $_POST['amount']   ?? 0 ),
+            'reason'     => sanitize_textarea_field( $_POST['reason'] ?? '' ),
+        ) );
+        if ( is_wp_error( $result ) ) {
+            wp_send_json_error( array( 'message' => $result->get_error_message() ) ); exit;
+        }
+        wp_send_json_success( array( 'refund_id' => $result, 'message' => 'Refund recorded successfully.' ) ); exit;
     }
 
     /* ── AJAX: Service Requests (admin) ─────────────────────────── */
