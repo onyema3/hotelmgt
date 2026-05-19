@@ -27,10 +27,12 @@ class GHM_Invoice {
         if ( ! $this->booking ) wp_die('Booking not found.');
         if ( ! $filename ) $filename = 'invoice-' . $this->booking->booking_ref . '.pdf';
         $pdf = $this->generate();
-        header('Content-Type: application/pdf');
-        header('Content-Disposition: inline; filename="' . $filename . '"');
-        header('Content-Length: ' . strlen($pdf));
-        header('Cache-Control: private, max-age=0, must-revalidate');
+        if ( ! headers_sent() ) {
+            header('Content-Type: application/pdf');
+            header('Content-Disposition: inline; filename="' . $filename . '"');
+            header('Content-Length: ' . strlen($pdf));
+            header('Cache-Control: private, max-age=0, must-revalidate');
+        }
         echo $pdf;
         exit;
     }
@@ -52,15 +54,39 @@ class GHM_Invoice {
 
     private function generate() {
         $b        = $this->booking;
+        if ( ! $b ) {
+            return $this->render_error( 'Invoice unavailable: booking not found.' );
+        }
         $hotel    = $this->hotel;
         $sym      = $this->sym;
         $currency = strtoupper( get_option('ghm_currency', 'NGN') );
         $today    = date('F j, Y');
-        $checkin  = date('F j, Y', strtotime($b->check_in));
-        $checkout = date('F j, Y', strtotime($b->check_out));
-        $nights   = max(1, (int)(new DateTime($b->check_in))->diff(new DateTime($b->check_out))->days);
-        $balance  = (float)$b->total_amount - (float)$b->paid_amount;
-        $paid_total = array_sum( array_column( (array)$this->payments, 'amount' ) );
+
+        // Safely parse check-in / check-out dates without throwing exceptions
+        $check_in_ts  = ! empty($b->check_in)  ? strtotime( $b->check_in )  : 0;
+        $check_out_ts = ! empty($b->check_out) ? strtotime( $b->check_out ) : 0;
+        $checkin   = $check_in_ts  ? date('F j, Y', $check_in_ts)  : '—';
+        $checkout  = $check_out_ts ? date('F j, Y', $check_out_ts) : '—';
+        $nights    = 1;
+        if ( $check_in_ts && $check_out_ts && $check_out_ts > $check_in_ts ) {
+            $nights = max( 1, (int) ceil( ( $check_out_ts - $check_in_ts ) / 86400 ) );
+        }
+
+        $total_amount = (float) ( $b->total_amount ?? 0 );
+        $paid_amount  = (float) ( $b->paid_amount  ?? 0 );
+        $balance      = $total_amount - $paid_amount;
+
+        // Safely sum payments (don't rely on array_column with possibly-null fields)
+        $paid_total = 0.0;
+        if ( ! empty( $this->payments ) && is_array( $this->payments ) ) {
+            foreach ( $this->payments as $p ) {
+                if ( is_object($p) && isset($p->amount) ) {
+                    $paid_total += (float) $p->amount;
+                } elseif ( is_array($p) && isset($p['amount']) ) {
+                    $paid_total += (float) $p['amount'];
+                }
+            }
+        }
 
         // Build HTML for wkhtmltopdf-style generation or native PHP PDF
         // Using PHP's built-in output buffering to create a clean HTML invoice
@@ -129,20 +155,20 @@ class GHM_Invoice {
   <div class="meta-box">
     <h4>Bill To</h4>
     <p>
-      <strong><?php echo esc_html($b->customer_name); ?></strong><br>
-      <?php echo esc_html($b->customer_email); ?><br>
-      <?php if($b->customer_phone) echo esc_html($b->customer_phone).'<br>'; ?>
+      <strong><?php echo esc_html($b->customer_name ?? 'Guest'); ?></strong><br>
+      <?php echo esc_html($b->customer_email ?? ''); ?><br>
+      <?php if(!empty($b->customer_phone)) echo esc_html($b->customer_phone).'<br>'; ?>
     </p>
   </div>
   <div class="meta-box">
     <h4>Booking Details</h4>
     <p>
-      <strong>Room:</strong> <?php echo esc_html($b->room_name); ?> (<?php echo esc_html($b->room_number); ?>)<br>
+      <strong>Room:</strong> <?php echo esc_html($b->room_name ?? '—'); ?> (<?php echo esc_html($b->room_number ?? '—'); ?>)<br>
       <strong>Check-In:</strong> <?php echo $checkin; ?><br>
       <strong>Check-Out:</strong> <?php echo $checkout; ?><br>
       <strong>Duration:</strong> <?php echo $nights; ?> night<?php echo $nights>1?'s':''; ?><br>
-      <strong>Guests:</strong> <?php echo $b->adults; ?> adult<?php echo $b->adults>1?'s':''; ?>
-      <?php if($b->children > 0) echo ', '.$b->children.' child'.($b->children>1?'ren':''); ?>
+      <strong>Guests:</strong> <?php echo (int)($b->adults ?? 1); ?> adult<?php echo ((int)($b->adults ?? 1))>1?'s':''; ?>
+      <?php if(!empty($b->children) && (int)$b->children > 0) echo ', '.(int)$b->children.' child'.((int)$b->children>1?'ren':''); ?>
     </p>
   </div>
 </div>
@@ -158,19 +184,20 @@ class GHM_Invoice {
   </thead>
   <tbody>
     <?php
-    $unit_price = $b->room_type === 'workspace'
+    $room_type  = $b->room_type ?? 'room';
+    $unit_price = $room_type === 'workspace'
         ? (float)($b->price_hour ?? 0)
         : (float)($b->price_night ?? 0);
-    $unit_label = $b->room_type === 'workspace' ? 'hour' : ($b->room_type === 'hall' ? 'day' : 'night');
+    $unit_label = $room_type === 'workspace' ? 'hour' : ($room_type === 'hall' ? 'day' : 'night');
     ?>
     <tr>
       <td>
-        <strong><?php echo esc_html($b->room_name); ?></strong> — Accommodation<br>
-        <small style="color:#6b7280;"><?php echo $checkin; ?> → <?php echo $checkout; ?></small>
+        <strong><?php echo esc_html($b->room_name ?? '—'); ?></strong> — Accommodation<br>
+        <small style="color:#6b7280;"><?php echo $checkin; ?> &rarr; <?php echo $checkout; ?></small>
       </td>
       <td><?php echo $sym.number_format($unit_price, 2).'/'.$unit_label; ?></td>
       <td><?php echo $nights; ?> <?php echo $unit_label; ?>(s)</td>
-      <td class="amount-col"><?php echo $sym.number_format($b->total_amount, 2); ?></td>
+      <td class="amount-col"><?php echo $sym.number_format($total_amount, 2); ?></td>
     </tr>
     <?php if(!empty($b->special_requests)): ?>
     <tr>
@@ -198,10 +225,10 @@ class GHM_Invoice {
       <tbody>
         <?php foreach($this->payments as $p): ?>
         <tr>
-          <td><?php echo date('M j, Y', strtotime($p->created_at)); ?></td>
-          <td><?php echo ucfirst(str_replace('_',' ',$p->method)); ?></td>
+          <td><?php echo !empty($p->created_at) ? date('M j, Y', strtotime($p->created_at)) : '—'; ?></td>
+          <td><?php echo ucfirst(str_replace('_',' ', $p->method ?? 'cash')); ?></td>
           <td style="font-size:11px;color:#6b7280;"><?php echo esc_html($p->transaction_id ?: '—'); ?></td>
-          <td class="amount-col" style="color:#166534;"><?php echo $sym.number_format($p->amount,2); ?></td>
+          <td class="amount-col" style="color:#166534;"><?php echo $sym.number_format((float)($p->amount ?? 0),2); ?></td>
         </tr>
         <?php endforeach; ?>
       </tbody>
@@ -211,7 +238,7 @@ class GHM_Invoice {
 
   <div class="totals">
     <table>
-      <tr><td>Subtotal</td><td class="amount-col"><?php echo $sym.number_format($b->total_amount,2); ?></td></tr>
+      <tr><td>Subtotal</td><td class="amount-col"><?php echo $sym.number_format($total_amount,2); ?></td></tr>
       <tr><td>Amount Paid</td><td class="amount-col" style="color:#166534;"><?php echo $sym.number_format($paid_total,2); ?></td></tr>
       <?php if($balance > 0): ?>
       <tr class="balance-row"><td>Balance Due</td><td class="amount-col"><?php echo $sym.number_format($balance,2); ?></td></tr>
@@ -219,8 +246,8 @@ class GHM_Invoice {
       <tr class="grand">
         <td>Payment Status</td>
         <td class="amount-col">
-          <span class="status-badge <?php echo $b->payment_status; ?>">
-            <?php echo ucfirst($b->payment_status); ?>
+          <span class="status-badge <?php echo esc_attr($b->payment_status ?? 'unpaid'); ?>">
+            <?php echo ucfirst($b->payment_status ?? 'unpaid'); ?>
           </span>
         </td>
       </tr>
@@ -232,7 +259,7 @@ class GHM_Invoice {
   <p><strong class="gold"><?php echo esc_html($hotel); ?></strong></p>
   <p>Thank you for your stay. This is a computer-generated invoice.</p>
   <p>For queries, contact us at <?php echo esc_html(get_option('ghm_admin_email', get_option('admin_email'))); ?></p>
-  <p style="margin-top:8px;">Invoice generated <?php echo $today; ?> &bull; Booking Ref: <?php echo esc_html($b->booking_ref); ?></p>
+  <p style="margin-top:8px;">Invoice generated <?php echo $today; ?> &bull; Booking Ref: <?php echo esc_html($b->booking_ref ?? ''); ?></p>
 </div>
 
 </body>
@@ -260,6 +287,37 @@ class GHM_Invoice {
     }
 
     /**
+     * Render a friendly error page (used as fallback when invoice cannot be generated).
+     */
+    private function render_error( $message ) {
+        $hotel = $this->hotel ?: get_bloginfo('name');
+        ob_start(); ?>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Invoice Error</title>
+<style>
+  body { font-family: Arial, sans-serif; background:#f9fafb; color:#1a1a2e; padding:60px 20px; text-align:center; }
+  .card { max-width:480px; margin:0 auto; background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:32px; box-shadow:0 4px 12px rgba(0,0,0,0.05); }
+  h1 { font-size:20px; margin-bottom:12px; color:#991b1b; }
+  p  { color:#374151; line-height:1.6; font-size:14px; }
+  a  { color:#c9a84c; text-decoration:none; font-weight:bold; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Unable to generate invoice</h1>
+    <p><?php echo esc_html($message); ?></p>
+    <p style="margin-top:16px;"><a href="<?php echo esc_url(home_url()); ?>">&larr; Return to <?php echo esc_html($hotel); ?></a></p>
+  </div>
+</body>
+</html>
+<?php
+        return ob_get_clean();
+    }
+
+    /**
      * Get invoice URL for a booking
      */
     public static function get_url( $booking_id ) {
@@ -277,11 +335,25 @@ class GHM_Invoice {
         $booking_id = absint($_GET['ghm_invoice']);
         $nonce      = sanitize_text_field($_GET['ghm_inv_nonce'] ?? '');
         if ( ! wp_verify_nonce($nonce, 'ghm_invoice_' . $booking_id) ) wp_die('Invalid link.');
-        $invoice = new self( $booking_id );
-        // Determine content type
-        header('Content-Type: text/html; charset=UTF-8');
-        header('Content-Disposition: inline');
-        echo $invoice->generate();
+
+        try {
+            $invoice = new self( $booking_id );
+            $output  = $invoice->generate();
+        } catch ( \Throwable $e ) {
+            // Log full error so admins can see it in debug.log without exposing details to guests
+            if ( function_exists('error_log') ) {
+                error_log( '[GHM_Invoice] Failed to generate invoice for booking ' . $booking_id . ': ' . $e->getMessage() );
+            }
+            $invoice = new self( 0 );
+            $output  = $invoice->render_error( 'We were unable to generate your invoice right now. Please contact the front desk.' );
+        }
+
+        if ( ! headers_sent() ) {
+            header('Content-Type: text/html; charset=UTF-8');
+            header('Content-Disposition: inline');
+            header('X-Robots-Tag: noindex, nofollow');
+        }
+        echo $output;
         exit;
     }
 }
