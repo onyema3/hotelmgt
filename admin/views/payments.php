@@ -112,20 +112,58 @@ $export_bookings_url = wp_nonce_url(
           <th>Amount</th>
           <th>Transaction ID</th>
           <th>Status</th>
+          <?php if ( current_user_can('manage_options') ): ?><th>Actions</th><?php endif; ?>
         </tr>
       </thead>
       <tbody>
         <?php if (empty($payments)): ?>
-        <tr><td colspan="7" style="text-align:center;padding:40px;color:var(--ghm-muted);">No payments recorded yet.</td></tr>
-        <?php else: foreach ($payments as $p): ?>
-        <tr>
+        <tr><td colspan="<?php echo current_user_can('manage_options') ? 8 : 7; ?>" style="text-align:center;padding:40px;color:var(--ghm-muted);">No payments recorded yet.</td></tr>
+        <?php else: foreach ($payments as $p):
+          $is_refund    = $p->status === 'refunded';
+          $is_completed = $p->status === 'completed';
+          $refunded_amt = $is_completed ? GHM_Payments::get_refunded_amount( $p->id ) : 0;
+          $refundable   = $is_completed ? round( (float) $p->amount - $refunded_amt, 2 ) : 0;
+        ?>
+        <tr<?php echo $is_refund ? ' style="opacity:.7;"' : ''; ?>>
           <td><?php echo date('M j, Y H:i', strtotime($p->created_at)); ?></td>
           <td style="color:var(--ghm-gold);font-size:12px;font-family:monospace;"><?php echo esc_html($p->booking_ref); ?></td>
           <td><?php echo esc_html($p->customer_name); ?></td>
           <td><span class="ghm-badge checked_out"><?php echo $methods[$p->method] ?? ucfirst($p->method); ?></span></td>
-          <td><strong><?php echo $sym.number_format($p->amount,2); ?></strong></td>
+          <td>
+            <?php if ( $is_refund ): ?>
+              <span style="color:var(--ghm-danger);">-<?php echo $sym.number_format($p->amount,2); ?></span>
+            <?php else: ?>
+              <strong><?php echo $sym.number_format($p->amount,2); ?></strong>
+            <?php endif; ?>
+          </td>
           <td style="font-size:12px;color:var(--ghm-muted);"><?php echo esc_html($p->transaction_id ?: '—'); ?></td>
-          <td><span class="ghm-badge paid"><?php echo ucfirst($p->status); ?></span></td>
+          <td>
+            <?php if ( $is_refund ): ?>
+              <span class="ghm-badge cancelled">Refund</span>
+            <?php else: ?>
+              <span class="ghm-badge paid"><?php echo ucfirst($p->status); ?></span>
+              <?php if ( $refunded_amt > 0 && $refundable > 0 ): ?>
+                <span style="font-size:10px;color:var(--ghm-warning);display:block;">Partial refund: <?php echo $sym.number_format($refunded_amt,2); ?></span>
+              <?php elseif ( $refunded_amt > 0 ): ?>
+                <span style="font-size:10px;color:var(--ghm-danger);display:block;">Fully refunded</span>
+              <?php endif; ?>
+            <?php endif; ?>
+          </td>
+          <?php if ( current_user_can('manage_options') ): ?>
+          <td>
+            <?php if ( $is_completed && $refundable > 0 ): ?>
+              <button class="ghm-btn ghm-btn-danger ghm-btn-sm ghm-refund-payment-btn"
+                      data-id="<?php echo $p->id; ?>"
+                      data-amount="<?php echo esc_attr($p->amount); ?>"
+                      data-refundable="<?php echo esc_attr($refundable); ?>"
+                      data-ref="<?php echo esc_attr($p->booking_ref); ?>"
+                      data-customer="<?php echo esc_attr($p->customer_name); ?>"
+                      title="Refund this payment">
+                <span class="dashicons dashicons-undo" style="font-size:13px;margin-top:2px;"></span> Refund
+              </button>
+            <?php endif; ?>
+          </td>
+          <?php endif; ?>
         </tr>
         <?php endforeach; endif; ?>
       </tbody>

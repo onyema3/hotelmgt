@@ -691,6 +691,106 @@
     initPayments() {
       const self = this;
       $(document).on('click', '.ghm-record-payment-btn', function(){ self.paymentModal(+$(this).data('id')); });
+      $(document).on('click', '.ghm-refund-payment-btn', function(){ self.refundModal($(this)); });
+    },
+
+    refundModal($btn) {
+      const self       = this;
+      const paymentId  = +$btn.data('id');
+      const origAmount = parseFloat($btn.data('amount'));
+      const refundable = parseFloat($btn.data('refundable'));
+      const ref        = $btn.data('ref') || '';
+      const customer   = $btn.data('customer') || '';
+      const sym        = self.esc(ghmAdmin.currency_symbol || '$');
+
+      const body = `
+        <div class="ghm-form-section">
+          <div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:8px;padding:12px 16px;font-size:13px;margin-bottom:16px;color:var(--ghm-danger);">
+            <strong>⚠ This records a refund in the ledger.</strong> You must also process the actual refund in your payment gateway dashboard (Paystack/Flutterwave) or hand the cash back to the guest.
+          </div>
+          <div style="background:var(--ghm-surface2);border:1px solid var(--ghm-border);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <span style="color:var(--ghm-muted);">Booking</span>
+              <span style="color:var(--ghm-gold);font-family:monospace;">${self.esc(ref)}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <span style="color:var(--ghm-muted);">Guest</span>
+              <span>${self.esc(customer)}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <span style="color:var(--ghm-muted);">Original Payment</span>
+              <span><strong>${sym}${origAmount.toFixed(2)}</strong></span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span style="color:var(--ghm-muted);">Max Refundable</span>
+              <span style="color:var(--ghm-danger);font-weight:700;">${sym}${refundable.toFixed(2)}</span>
+            </div>
+          </div>
+          <div class="ghm-form-grid">
+            <div class="ghm-form-field">
+              <label>Refund Amount (${sym}) *</label>
+              <input type="number" name="amount" step="0.01" min="0.01" max="${refundable}" value="${refundable.toFixed(2)}" required>
+            </div>
+            <div class="ghm-form-field span-2">
+              <label>Reason * <small style="color:var(--ghm-muted);font-weight:400;">(required for audit trail)</small></label>
+              <textarea name="reason" rows="2" required placeholder="e.g. Guest cancelled, overcharge correction, service not provided…"></textarea>
+            </div>
+          </div>
+        </div>`;
+
+      const foot = `
+        <button type="button" class="ghm-btn ghm-btn-outline" id="ghm-btn-cancel">Cancel</button>
+        <button type="button" class="ghm-btn ghm-btn-danger" id="ghm-btn-submit">
+          <span class="dashicons dashicons-undo" style="font-size:14px;margin-top:1px;"></span> Process Refund
+        </button>`;
+
+      self.openModal('Refund Payment #' + paymentId, body, foot);
+
+      document.getElementById('ghm-btn-cancel').addEventListener('click', () => self.closeModal());
+
+      let submitting = false;
+      document.getElementById('ghm-btn-submit').addEventListener('click', () => {
+        if (submitting) return;
+        const amount = parseFloat(document.querySelector('#ghm-active-modal [name="amount"]').value);
+        const reason = (document.querySelector('#ghm-active-modal [name="reason"]').value || '').trim();
+
+        if (!amount || amount <= 0) {
+          self.toast('Please enter a valid refund amount.', 'error');
+          return;
+        }
+        if (amount > refundable) {
+          self.toast('Amount exceeds maximum refundable (' + sym + refundable.toFixed(2) + ').', 'error');
+          return;
+        }
+        if (!reason) {
+          self.toast('A reason is required for all refunds.', 'error');
+          document.querySelector('#ghm-active-modal [name="reason"]').focus();
+          return;
+        }
+        if (!confirm('Refund ' + sym + amount.toFixed(2) + ' for payment #' + paymentId + '?\n\nThis cannot be undone.')) {
+          return;
+        }
+
+        submitting = true;
+        const $submitBtn = $('#ghm-btn-submit');
+        self.btnBusy($submitBtn, 'Processing');
+
+        self.post('ghm_refund_payment', {
+          payment_id: paymentId,
+          amount: amount,
+          reason: reason
+        })
+        .then((data) => {
+          self.toast(data.message || 'Refund recorded!', 'success');
+          self.closeModal();
+          setTimeout(() => location.reload(), 800);
+        })
+        .catch((err) => {
+          self.toast(err || 'Refund failed.', 'error');
+          self.btnReset($submitBtn);
+          submitting = false;
+        });
+      });
     },
 
     paymentModal(bookingId) {
